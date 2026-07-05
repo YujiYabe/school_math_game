@@ -1,0 +1,17 @@
+#!/bin/sh
+
+APP_HOME=$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd -P)
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+
+if [ -n "$JAVA_HOME" ]; then
+    JAVACMD=$JAVA_HOME/bin/java
+elif [ -x /snap/android-studio/232/jbr/bin/java ]; then
+    JAVACMD=/snap/android-studio/232/jbr/bin/java
+else
+    JAVACMD=java
+fi
+
+exec "$JAVACMD" \
+    -classpath "$CLASSPATH" \
+    org.gradle.wrapper.GradleWrapperMain \
+    "$@"

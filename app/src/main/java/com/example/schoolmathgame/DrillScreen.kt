@@ -1,18 +1,17 @@
 package com.example.schoolmathgame
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -21,8 +20,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -40,9 +42,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
-fun DrillScreen(
-    viewModel: DrillViewModel = viewModel(),
-) {
+fun DrillScreen() {
+    val context = LocalContext.current
+    val viewModel: DrillViewModel = viewModel(
+        factory = remember(context) {
+            DrillViewModel.Factory(context)
+        },
+    )
+
+    DrillScreenContent(viewModel = viewModel)
+}
+
+@Composable
+private fun DrillScreenContent(viewModel: DrillViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     MaterialTheme {
@@ -54,18 +66,16 @@ fun DrillScreen(
                 DrillScreenState.Settings -> SettingsScreen(
                     uiState = uiState,
                     onTimeLimitChanged = viewModel::setTimeLimit,
-                    onNumberRangeChanged = viewModel::setNumberRange,
+                    onQuestionCountChanged = viewModel::setQuestionCount,
+                    onLeftNumberRangeChanged = viewModel::setLeftNumberRange,
+                    onRightNumberRangeChanged = viewModel::setRightNumberRange,
+                    onOperationChanged = viewModel::setOperation,
                     onStart = viewModel::startDrill,
                 )
 
                 DrillScreenState.Drill -> ActiveDrillScreen(
                     uiState = uiState,
-                    onDigit = viewModel::appendDigit,
-                    onMinus = viewModel::appendMinus,
-                    onClear = viewModel::clearInput,
-                    onConfirm = viewModel::submitAnswer,
-                    onToggleDivisionTarget = viewModel::toggleDivisionInputTarget,
-                    onDivisionTargetChanged = viewModel::setDivisionInputTarget,
+                    onChoiceSelected = viewModel::selectChoice,
                 )
 
                 DrillScreenState.Result -> ResultScreen(
@@ -81,95 +91,131 @@ fun DrillScreen(
 private fun SettingsScreen(
     uiState: DrillUiState,
     onTimeLimitChanged: (Int) -> Unit,
-    onNumberRangeChanged: (NumberRange) -> Unit,
+    onQuestionCountChanged: (Int) -> Unit,
+    onLeftNumberRangeChanged: (NumberRange) -> Unit,
+    onRightNumberRangeChanged: (NumberRange) -> Unit,
+    onOperationChanged: (Operation) -> Unit,
     onStart: () -> Unit,
 ) {
     Scaffold { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0xFFB9E9FF),
+                            Color(0xFF3F9DFF),
+                            Color(0xFF1F73E8),
+                        ),
+                    ),
+                )
+                .padding(18.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "100本ノック算数ドリル",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Black,
-                textAlign = TextAlign.Center,
-            )
-
-            Spacer(modifier = Modifier.height(40.dp))
-
-            SettingLabel(text = "制限時間")
-            TimeLimitDropdown(
-                selectedSeconds = uiState.timeLimitSeconds,
-                onSelected = onTimeLimitChanged,
-            )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            SettingLabel(text = "出題範囲")
-            Row(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                RangeButton(
-                    text = "1桁のみ",
-                    selected = uiState.numberRange == NumberRange.OneDigit,
-                    onClick = { onNumberRangeChanged(NumberRange.OneDigit) },
-                    modifier = Modifier.weight(1f),
-                )
-                RangeButton(
-                    text = "2桁含む",
-                    selected = uiState.numberRange == NumberRange.IncludeTwoDigits,
-                    onClick = { onNumberRangeChanged(NumberRange.IncludeTwoDigits) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            Spacer(modifier = Modifier.height(44.dp))
-
-            Button(
-                onClick = onStart,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
                 shape = RoundedCornerShape(8.dp),
+                color = Color(0xAAE9F7FF),
+                shadowElevation = 8.dp,
             ) {
-                Text(text = "スタート", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Column(
+                    modifier = Modifier
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    Text(
+                        text = "メニュー",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFF16408F),
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        NumberRangeDropdown(
+                            selectedRange = uiState.leftNumberRange,
+                            onSelected = onLeftNumberRangeChanged,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OperationDropdown(
+                            selectedOperation = uiState.selectedOperation,
+                            onSelected = onOperationChanged,
+                            modifier = Modifier.weight(0.9f),
+                        )
+                        NumberRangeDropdown(
+                            selectedRange = uiState.rightNumberRange,
+                            onSelected = onRightNumberRangeChanged,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    TimerSlider(
+                        seconds = uiState.timeLimitSeconds,
+                        onSecondsChanged = onTimeLimitChanged,
+                    )
+
+                    QuestionCountSlider(
+                        count = uiState.questionCount,
+                        onCountChanged = onQuestionCountChanged,
+                    )
+
+                    Button(
+                        onClick = onStart,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(62.dp),
+                        shape = RoundedCornerShape(31.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF86DC23),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text(text = "start", fontSize = 24.sp, fontWeight = FontWeight.Black)
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TimeLimitDropdown(
-    selectedSeconds: Int,
-    onSelected: (Int) -> Unit,
+private fun NumberRangeDropdown(
+    selectedRange: NumberRange,
+    onSelected: (NumberRange) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    Box {
-        OutlinedButton(
+    Box(modifier = modifier) {
+        Button(
             onClick = { expanded = true },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp),
+                .height(64.dp),
             shape = RoundedCornerShape(8.dp),
         ) {
-            Text(text = "${selectedSeconds}秒", fontSize = 18.sp)
+            Text(
+                text = selectedRange.label,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center,
+            )
         }
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            (1..10).forEach { seconds ->
+            NumberRange.values().forEach { range ->
                 DropdownMenuItem(
-                    text = { Text(text = "${seconds}秒") },
+                    text = { Text(text = range.label) },
                     onClick = {
-                        onSelected(seconds)
+                        onSelected(range)
                         expanded = false
                     },
                 )
@@ -179,57 +225,128 @@ private fun TimeLimitDropdown(
 }
 
 @Composable
-private fun RangeButton(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun OperationDropdown(
+    selectedOperation: Operation,
+    onSelected: (Operation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
+    var expanded by remember { mutableStateOf(false) }
 
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(52.dp),
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-        ),
-    ) {
-        Text(text = text, fontWeight = FontWeight.Bold)
+    Box(modifier = modifier) {
+        Button(
+            onClick = { expanded = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF86DC23),
+                contentColor = Color(0xFF16408F),
+            ),
+        ) {
+            Text(
+                text = selectedOperation.symbol,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            Operation.values().forEach { operation ->
+                DropdownMenuItem(
+                    text = { Text(text = operation.menuLabel) },
+                    onClick = {
+                        onSelected(operation)
+                        expanded = false
+                    },
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun SettingLabel(text: String) {
-    Text(
-        text = text,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-    )
+private fun TimerSlider(
+    seconds: Int,
+    onSecondsChanged: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "timer",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+            Text(
+                text = "${seconds}秒",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+        }
+        Slider(
+            value = seconds.toFloat(),
+            onValueChange = { onSecondsChanged((it + 0.5f).toInt().coerceIn(1, 30)) },
+            valueRange = 1f..30f,
+            steps = 28,
+        )
+    }
+}
+
+@Composable
+private fun QuestionCountSlider(
+    count: Int,
+    onCountChanged: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "questions",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+            Text(
+                text = "${count}問",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+        }
+        Slider(
+            value = count.toFloat(),
+            onValueChange = {
+                val rounded = ((it + 5f).toInt() / 10) * 10
+                onCountChanged(rounded.coerceIn(10, 100))
+            },
+            valueRange = 10f..100f,
+            steps = 8,
+        )
+    }
 }
 
 @Composable
 private fun ActiveDrillScreen(
     uiState: DrillUiState,
-    onDigit: (Int) -> Unit,
-    onMinus: () -> Unit,
-    onClear: () -> Unit,
-    onConfirm: () -> Unit,
-    onToggleDivisionTarget: () -> Unit,
-    onDivisionTargetChanged: (DivisionInputTarget) -> Unit,
+    onChoiceSelected: (AnswerChoice) -> Unit,
 ) {
     val problem = uiState.currentProblem
 
@@ -250,39 +367,16 @@ private fun ActiveDrillScreen(
         ) {
             Text(
                 text = problem?.expression.orEmpty(),
-                fontSize = 44.sp,
+                fontSize = 48.sp,
                 fontWeight = FontWeight.Black,
                 textAlign = TextAlign.Center,
-                lineHeight = 52.sp,
+                lineHeight = 56.sp,
             )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            if (problem?.operation == Operation.Divide) {
-                DivisionAnswerFields(
-                    quotient = uiState.quotientInput,
-                    remainder = uiState.remainderInput,
-                    activeTarget = uiState.divisionInputTarget,
-                    onTargetChanged = onDivisionTargetChanged,
-                )
-            } else {
-                AnswerBox(
-                    label = "答え",
-                    value = uiState.input,
-                    selected = true,
-                    onClick = {},
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
         }
 
-        CustomTenKey(
-            isDivision = problem?.operation == Operation.Divide,
-            onDigit = onDigit,
-            onMinus = onMinus,
-            onClear = onClear,
-            onConfirm = onConfirm,
-            onToggleDivisionTarget = onToggleDivisionTarget,
+        ChoicePanel(
+            choices = uiState.choices,
+            onChoiceSelected = onChoiceSelected,
         )
     }
 }
@@ -300,7 +394,7 @@ private fun DrillHeader(uiState: DrillUiState) {
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = "${uiState.currentQuestionNumber} / ${uiState.totalQuestions}問目",
+                text = "${uiState.currentQuestionNumber} / ${uiState.questionCount}問目",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Black,
             )
@@ -319,7 +413,7 @@ private fun DrillHeader(uiState: DrillUiState) {
         Spacer(modifier = Modifier.height(10.dp))
 
         LinearProgressIndicator(
-            progress = uiState.timerProgress,
+            progress = { uiState.timerProgress },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(12.dp),
@@ -334,87 +428,9 @@ private fun DrillHeader(uiState: DrillUiState) {
 }
 
 @Composable
-private fun DivisionAnswerFields(
-    quotient: String,
-    remainder: String,
-    activeTarget: DivisionInputTarget,
-    onTargetChanged: (DivisionInputTarget) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        AnswerBox(
-            label = "商",
-            value = quotient,
-            selected = activeTarget == DivisionInputTarget.Quotient,
-            onClick = { onTargetChanged(DivisionInputTarget.Quotient) },
-            modifier = Modifier.weight(1f),
-        )
-        AnswerBox(
-            label = "余り",
-            value = remainder,
-            selected = activeTarget == DivisionInputTarget.Remainder,
-            onClick = { onTargetChanged(DivisionInputTarget.Remainder) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun AnswerBox(
-    label: String,
-    value: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val borderColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline
-    }
-    val backgroundColor = if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-
-    Column(
-        modifier = modifier
-            .height(104.dp)
-            .border(3.dp, borderColor, RoundedCornerShape(8.dp))
-            .background(backgroundColor, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = value.ifBlank { " " },
-            modifier = Modifier.fillMaxWidth(),
-            fontSize = 34.sp,
-            lineHeight = 40.sp,
-            fontWeight = FontWeight.Black,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun CustomTenKey(
-    isDivision: Boolean,
-    onDigit: (Int) -> Unit,
-    onMinus: () -> Unit,
-    onClear: () -> Unit,
-    onConfirm: () -> Unit,
-    onToggleDivisionTarget: () -> Unit,
+private fun ChoicePanel(
+    choices: List<AnswerChoice>,
+    onChoiceSelected: (AnswerChoice) -> Unit,
 ) {
     Surface(
         tonalElevation = 4.dp,
@@ -423,100 +439,54 @@ private fun CustomTenKey(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .navigationBarsPadding()
+                .padding(
+                    start = 12.dp,
+                    top = 12.dp,
+                    end = 12.dp,
+                    bottom = 28.dp,
+                ),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            KeyRow {
-                NumberKey("7") { onDigit(7) }
-                NumberKey("8") { onDigit(8) }
-                NumberKey("9") { onDigit(9) }
-                ActionKey("C", onClick = onClear)
-            }
-            KeyRow {
-                NumberKey("4") { onDigit(4) }
-                NumberKey("5") { onDigit(5) }
-                NumberKey("6") { onDigit(6) }
-                ActionKey("商/余り", enabled = isDivision, onClick = onToggleDivisionTarget)
-            }
-            KeyRow {
-                NumberKey("1") { onDigit(1) }
-                NumberKey("2") { onDigit(2) }
-                NumberKey("3") { onDigit(3) }
-                ActionKey("-", enabled = !isDivision, onClick = onMinus)
-            }
-            KeyRow {
-                Spacer(modifier = Modifier.weight(1f))
-                NumberKey("0") { onDigit(0) }
-                Spacer(modifier = Modifier.weight(1f))
-                ConfirmKey(onClick = onConfirm)
+            choices.chunked(2).forEach { rowChoices ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowChoices.forEach { choice ->
+                        ChoiceButton(
+                            choice = choice,
+                            onClick = { onChoiceSelected(choice) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (rowChoices.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun KeyRow(content: @Composable RowScope.() -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        content = content,
-    )
-}
-
-@Composable
-private fun RowScope.NumberKey(
-    text: String,
+private fun ChoiceButton(
+    choice: AnswerChoice,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Button(
         onClick = onClick,
-        modifier = Modifier
-            .weight(1f)
-            .aspectRatio(1.55f),
-        shape = RoundedCornerShape(8.dp),
-    ) {
-        Text(text = text, fontSize = 28.sp, fontWeight = FontWeight.Black)
-    }
-}
-
-@Composable
-private fun RowScope.ActionKey(
-    text: String,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier
-            .weight(1f)
-            .aspectRatio(1.55f),
+        modifier = modifier.height(93.dp),
         shape = RoundedCornerShape(8.dp),
     ) {
         Text(
-            text = text,
-            fontSize = if (text.length > 2) 14.sp else 24.sp,
+            text = choice.label,
+            fontSize = if (choice.label.length > 8) 18.sp else 28.sp,
+            lineHeight = 24.sp,
             fontWeight = FontWeight.Black,
             textAlign = TextAlign.Center,
-            lineHeight = 18.sp,
-        )
-    }
-}
-
-@Composable
-private fun RowScope.ConfirmKey(onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier
-            .weight(1f)
-            .aspectRatio(1.55f),
-        shape = RoundedCornerShape(8.dp),
-    ) {
-        Text(
-            text = "確定",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Black,
-            textAlign = TextAlign.Center,
+            maxLines = 2,
         )
     }
 }
@@ -529,9 +499,10 @@ private fun ResultScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .navigationBarsPadding()
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
             text = "結果",
@@ -539,17 +510,20 @@ private fun ResultScreen(
             fontWeight = FontWeight.Black,
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
-
         Text(
-            text = "${uiState.correctCount} / ${uiState.totalQuestions} 点",
+            text = "${uiState.correctCount} / ${uiState.questionCount} 点",
             fontSize = 52.sp,
             lineHeight = 60.sp,
             fontWeight = FontWeight.Black,
             textAlign = TextAlign.Center,
         )
 
-        Spacer(modifier = Modifier.height(40.dp))
+        ReviewList(
+            reviews = uiState.reviews,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        )
 
         Button(
             onClick = onBackToSettings,
@@ -558,7 +532,71 @@ private fun ResultScreen(
                 .height(56.dp),
             shape = RoundedCornerShape(8.dp),
         ) {
-            Text(text = "設定に戻る", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(text = "もう一度", fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
+    }
+}
+
+@Composable
+private fun ReviewList(
+    reviews: List<AnswerReview>,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            reviews.forEach { review ->
+                ReviewRow(review = review)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewRow(review: AnswerReview) {
+    val textColor = if (review.isCorrect) Color.Black else Color(0xFFD00000)
+    val selectedText = review.selectedAnswer ?: "未回答"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "${review.questionNumber}問目",
+                color = if (review.isCorrect) Color(0xFF666666) else Color(0xFFD00000),
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+            )
+            Text(
+                text = review.expression,
+                color = textColor,
+                fontWeight = FontWeight.Black,
+                fontSize = 19.sp,
+            )
+        }
+        Text(
+            text = "選択: $selectedText   正解: ${review.correctAnswer}",
+            color = textColor,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            lineHeight = 20.sp,
+        )
     }
 }
