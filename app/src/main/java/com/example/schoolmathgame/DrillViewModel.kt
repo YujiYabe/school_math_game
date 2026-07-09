@@ -27,6 +27,7 @@ private const val MaxQuestionCount = 100
 enum class DrillScreenState {
     Settings,
     Drill,
+    RetryResult,
     Result,
 }
 
@@ -71,10 +72,18 @@ data class AnswerChoice(
 
 data class AnswerReview(
     val questionNumber: Int,
+    val problem: MathProblem,
     val expression: String,
     val correctAnswer: String,
     val selectedAnswer: String?,
     val isCorrect: Boolean,
+    val retryCount: Int = 0,
+)
+
+data class RetryProblem(
+    val questionNumber: Int,
+    val problem: MathProblem,
+    val retryCount: Int = 0,
 )
 
 data class DrillUiState(
@@ -89,8 +98,14 @@ data class DrillUiState(
     val currentProblem: MathProblem? = null,
     val choices: List<AnswerChoice> = emptyList(),
     val reviews: List<AnswerReview> = emptyList(),
+    val allReviews: List<AnswerReview> = emptyList(),
+    val retryProblems: List<RetryProblem> = emptyList(),
+    val isRetryMode: Boolean = false,
     val remainingMillis: Long = 0L,
 ) {
+    val activeQuestionCount: Int
+        get() = if (isRetryMode) retryProblems.size else questionCount
+
     val timerProgress: Float
         get() {
             val full = timeLimitSeconds * 1_000L
@@ -201,6 +216,26 @@ class DrillViewModel private constructor(
             currentProblem = question.problem,
             choices = question.choices,
             reviews = emptyList(),
+            allReviews = emptyList(),
+            retryProblems = emptyList(),
+            isRetryMode = false,
+            remainingMillis = state.timeLimitSeconds * 1_000L,
+        )
+        startProblemTimer()
+    }
+
+    fun startRetryDrill() {
+        timerJob?.cancel()
+        val state = _uiState.value
+        val firstProblem = state.retryProblems.firstOrNull() ?: return
+        _uiState.value = state.copy(
+            screen = DrillScreenState.Drill,
+            currentQuestionNumber = 1,
+            correctCount = 0,
+            currentProblem = firstProblem.problem,
+            choices = generateIntegerChoices(firstProblem.problem),
+            reviews = emptyList(),
+            isRetryMode = true,
             remainingMillis = state.timeLimitSeconds * 1_000L,
         )
         startProblemTimer()
@@ -216,6 +251,9 @@ class DrillViewModel private constructor(
                 currentProblem = null,
                 choices = emptyList(),
                 reviews = emptyList(),
+                allReviews = emptyList(),
+                retryProblems = emptyList(),
+                isRetryMode = false,
                 remainingMillis = 0L,
             )
         }
@@ -233,44 +271,122 @@ class DrillViewModel private constructor(
 
         val isCorrect = selectedChoice?.isCorrect == true
         val nextCorrectCount = state.correctCount + if (isCorrect) 1 else 0
+        val reviewQuestionNumber = state.retryProblems
+            .getOrNull(state.currentQuestionNumber - 1)
+            ?.questionNumber
+            ?: state.currentQuestionNumber
         val nextReviews = state.reviews + AnswerReview(
-            questionNumber = state.currentQuestionNumber,
+            questionNumber = reviewQuestionNumber,
+            problem = state.currentProblem,
             expression = state.currentProblem.expression,
             correctAnswer = state.choices.firstOrNull { it.isCorrect }?.label.orEmpty(),
             selectedAnswer = selectedChoice?.label,
             isCorrect = isCorrect,
         )
 
-        if (state.currentQuestionNumber >= state.questionCount) {
-            _uiState.update {
-                it.copy(
-                    screen = DrillScreenState.Result,
-                    correctCount = nextCorrectCount,
-                    currentProblem = null,
-                    choices = emptyList(),
-                    reviews = nextReviews,
-                    remainingMillis = 0L,
-                )
-            }
+        if (state.currentQuestionNumber >= state.activeQuestionCount) {
+            finishAttempt(
+                correctCount = nextCorrectCount,
+                reviews = nextReviews,
+            )
             return
         }
 
         _uiState.update {
-            val question = generateQuestion(
-                leftNumberRange = it.leftNumberRange,
-                rightNumberRange = it.rightNumberRange,
-                operation = it.selectedOperation,
-            )
+            val nextProblem = nextProblem(state = it)
             it.copy(
                 currentQuestionNumber = it.currentQuestionNumber + 1,
                 correctCount = nextCorrectCount,
-                currentProblem = question.problem,
-                choices = question.choices,
+                currentProblem = nextProblem.problem,
+                choices = nextProblem.choices,
                 reviews = nextReviews,
                 remainingMillis = it.timeLimitSeconds * 1_000L,
             )
         }
         startProblemTimer()
+    }
+
+    private fun finishAttempt(
+        correctCount: Int,
+        reviews: List<AnswerReview>,
+    ) {
+        val incorrectReviews = reviews.filterNot { it.isCorrect }
+        _uiState.update {
+            val allReviews = if (it.isRetryMode) {
+                reviewsAfterRetryAttempt(
+                    allReviews = it.allReviews,
+                    retryProblems = it.retryProblems,
+                )
+            } else {
+                reviews
+            }
+
+            if (incorrectReviews.isEmpty()) {
+                it.copy(
+                    screen = DrillScreenState.Result,
+                    correctCount = allReviews.size,
+                    currentProblem = null,
+                    choices = emptyList(),
+                    reviews = allReviews,
+                    allReviews = allReviews,
+                    retryProblems = emptyList(),
+                    isRetryMode = false,
+                    remainingMillis = 0L,
+                )
+            } else {
+                it.copy(
+                    screen = DrillScreenState.RetryResult,
+                    correctCount = correctCount,
+                    currentProblem = null,
+                    choices = emptyList(),
+                    reviews = incorrectReviews,
+                    allReviews = allReviews,
+                    retryProblems = incorrectReviews.map { review ->
+                        val previousRetryCount = it.retryProblems
+                            .firstOrNull { retryProblem -> retryProblem.questionNumber == review.questionNumber }
+                            ?.retryCount
+                            ?: 0
+                        RetryProblem(
+                            questionNumber = review.questionNumber,
+                            problem = review.problem,
+                            retryCount = previousRetryCount + if (it.isRetryMode) 1 else 0,
+                        )
+                    },
+                    isRetryMode = false,
+                    remainingMillis = 0L,
+                )
+            }
+        }
+    }
+
+    private fun reviewsAfterRetryAttempt(
+        allReviews: List<AnswerReview>,
+        retryProblems: List<RetryProblem>,
+    ): List<AnswerReview> {
+        val retryCountsByQuestion = retryProblems.associate { retryProblem ->
+            retryProblem.questionNumber to retryProblem.retryCount + 1
+        }
+        return allReviews.map { review ->
+            retryCountsByQuestion[review.questionNumber]?.let { retryCount ->
+                review.copy(retryCount = retryCount)
+            } ?: review
+        }
+    }
+
+    private fun nextProblem(state: DrillUiState): GeneratedQuestion {
+        val retryProblem = state.retryProblems.getOrNull(state.currentQuestionNumber)
+        if (state.isRetryMode && retryProblem != null) {
+            return GeneratedQuestion(
+                problem = retryProblem.problem,
+                choices = generateIntegerChoices(retryProblem.problem),
+            )
+        }
+
+        return generateQuestion(
+            leftNumberRange = state.leftNumberRange,
+            rightNumberRange = state.rightNumberRange,
+            operation = state.selectedOperation,
+        )
     }
 
     private fun startProblemTimer() {

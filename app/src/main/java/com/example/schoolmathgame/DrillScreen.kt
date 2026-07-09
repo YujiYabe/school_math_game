@@ -78,6 +78,11 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     onChoiceSelected = viewModel::selectChoice,
                 )
 
+                DrillScreenState.RetryResult -> RetryResultScreen(
+                    uiState = uiState,
+                    onRetry = viewModel::startRetryDrill,
+                )
+
                 DrillScreenState.Result -> ResultScreen(
                     uiState = uiState,
                     onBackToSettings = viewModel::returnToSettings,
@@ -394,7 +399,7 @@ private fun DrillHeader(uiState: DrillUiState) {
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = "${uiState.currentQuestionNumber} / ${uiState.questionCount}問目",
+                text = "${uiState.currentQuestionNumber} / ${uiState.activeQuestionCount}問目",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Black,
             )
@@ -492,6 +497,54 @@ private fun ChoiceButton(
 }
 
 @Composable
+private fun RetryResultScreen(
+    uiState: DrillUiState,
+    onRetry: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            text = "間違いチェック",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Black,
+        )
+
+        Text(
+            text = "${uiState.reviews.size}問をもう一度",
+            fontSize = 40.sp,
+            lineHeight = 46.sp,
+            fontWeight = FontWeight.Black,
+            textAlign = TextAlign.Center,
+        )
+
+        ReviewList(
+            reviews = uiState.reviews,
+            showCorrectAnswer = false,
+            showRetryCount = false,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        )
+
+        Button(
+            onClick = onRetry,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(text = "間違えた問題を解く", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
 private fun ResultScreen(
     uiState: DrillUiState,
     onBackToSettings: () -> Unit,
@@ -511,7 +564,7 @@ private fun ResultScreen(
         )
 
         Text(
-            text = "${uiState.correctCount} / ${uiState.questionCount} 点",
+            text = "${uiState.correctCount} / ${uiState.reviews.size} 点",
             fontSize = 52.sp,
             lineHeight = 60.sp,
             fontWeight = FontWeight.Black,
@@ -520,6 +573,8 @@ private fun ResultScreen(
 
         ReviewList(
             reviews = uiState.reviews,
+            showCorrectAnswer = true,
+            showRetryCount = true,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
@@ -540,6 +595,8 @@ private fun ResultScreen(
 @Composable
 private fun ReviewList(
     reviews: List<AnswerReview>,
+    showCorrectAnswer: Boolean,
+    showRetryCount: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -555,16 +612,34 @@ private fun ReviewList(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             reviews.forEach { review ->
-                ReviewRow(review = review)
+                ReviewRow(
+                    review = review,
+                    showCorrectAnswer = showCorrectAnswer,
+                    showRetryCount = showRetryCount,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ReviewRow(review: AnswerReview) {
+private fun ReviewRow(
+    review: AnswerReview,
+    showCorrectAnswer: Boolean,
+    showRetryCount: Boolean,
+) {
     val textColor = if (review.isCorrect) Color.Black else Color(0xFFD00000)
     val selectedText = review.selectedAnswer ?: "未回答"
+    val retryText = if (showRetryCount && review.retryCount > 0) {
+        "   リトライ: ${review.retryCount}回"
+    } else {
+        ""
+    }
+    val answerText = if (showCorrectAnswer) {
+        "選択: $selectedText   正解: ${review.correctAnswer}$retryText"
+    } else {
+        "選択: $selectedText"
+    }
 
     Column(
         modifier = Modifier
@@ -592,7 +667,7 @@ private fun ReviewRow(review: AnswerReview) {
             )
         }
         Text(
-            text = "選択: $selectedText   正解: ${review.correctAnswer}",
+            text = answerText,
             color = textColor,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp,
