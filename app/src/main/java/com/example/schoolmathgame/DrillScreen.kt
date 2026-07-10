@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -71,6 +72,7 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     onRightNumberRangeChanged = viewModel::setRightNumberRange,
                     onOperationChanged = viewModel::setOperation,
                     onStart = viewModel::startDrill,
+                    onHistory = viewModel::showHistory,
                 )
 
                 DrillScreenState.Drill -> ActiveDrillScreen(
@@ -87,6 +89,18 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     uiState = uiState,
                     onBackToSettings = viewModel::returnToSettings,
                 )
+
+                DrillScreenState.History -> HistoryScreen(
+                    uiState = uiState,
+                    onBack = viewModel::returnToSettings,
+                    onDetail = viewModel::showHistoryDetail,
+                    onDelete = viewModel::deleteHistory,
+                )
+
+                DrillScreenState.HistoryDetail -> HistoryDetailScreen(
+                    history = uiState.selectedHistory,
+                    onBack = viewModel::returnToHistory,
+                )
             }
         }
     }
@@ -101,6 +115,7 @@ private fun SettingsScreen(
     onRightNumberRangeChanged: (NumberRange) -> Unit,
     onOperationChanged: (Operation) -> Unit,
     onStart: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     Scaffold { paddingValues ->
         Box(
@@ -143,8 +158,11 @@ private fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        val leftNumberRangeOptions = uiState.selectedOperation.leftNumberRangeOptions()
+                        val rightNumberRangeOptions = uiState.selectedOperation.rightNumberRangeOptions()
                         NumberRangeDropdown(
                             selectedRange = uiState.leftNumberRange,
+                            options = leftNumberRangeOptions,
                             onSelected = onLeftNumberRangeChanged,
                             modifier = Modifier.weight(1f),
                         )
@@ -155,6 +173,7 @@ private fun SettingsScreen(
                         )
                         NumberRangeDropdown(
                             selectedRange = uiState.rightNumberRange,
+                            options = rightNumberRangeOptions,
                             onSelected = onRightNumberRangeChanged,
                             modifier = Modifier.weight(1f),
                         )
@@ -183,6 +202,20 @@ private fun SettingsScreen(
                     ) {
                         Text(text = "start", fontSize = 24.sp, fontWeight = FontWeight.Black)
                     }
+
+                    Button(
+                        onClick = onHistory,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF16408F),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text(text = "履歴", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -192,6 +225,7 @@ private fun SettingsScreen(
 @Composable
 private fun NumberRangeDropdown(
     selectedRange: NumberRange,
+    options: List<NumberRange>,
     onSelected: (NumberRange) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -216,7 +250,7 @@ private fun NumberRangeDropdown(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            NumberRange.values().forEach { range ->
+            options.forEach { range ->
                 DropdownMenuItem(
                     text = { Text(text = range.label) },
                     onClick = {
@@ -226,6 +260,28 @@ private fun NumberRangeDropdown(
                 )
             }
         }
+    }
+}
+
+private fun Operation.leftNumberRangeOptions(): List<NumberRange> {
+    return when (this) {
+        Operation.Multiply -> listOf(NumberRange.OneDigit)
+        Operation.Divide -> listOf(NumberRange.IncludeTwoDigits)
+        Operation.Add,
+        Operation.Subtract,
+            -> NumberRange.values().toList()
+    }
+}
+
+private fun Operation.rightNumberRangeOptions(): List<NumberRange> {
+    return when (this) {
+        Operation.Multiply,
+        Operation.Divide,
+            -> listOf(NumberRange.OneDigit)
+
+        Operation.Add,
+        Operation.Subtract,
+            -> NumberRange.values().toList()
     }
 }
 
@@ -339,11 +395,11 @@ private fun QuestionCountSlider(
         Slider(
             value = count.toFloat(),
             onValueChange = {
-                val rounded = ((it + 5f).toInt() / 10) * 10
-                onCountChanged(rounded.coerceIn(10, 100))
+                val rounded = ((it + 2.5f).toInt() / 5) * 5
+                onCountChanged(rounded.coerceIn(5, 100))
             },
-            valueRange = 10f..100f,
-            steps = 8,
+            valueRange = 5f..100f,
+            steps = 18,
         )
     }
 }
@@ -593,6 +649,282 @@ private fun ResultScreen(
 }
 
 @Composable
+private fun HistoryScreen(
+    uiState: DrillUiState,
+    onBack: () -> Unit,
+    onDetail: (DrillHistory) -> Unit,
+    onDelete: (DrillHistory) -> Unit,
+) {
+    var deleteTarget by remember { mutableStateOf<DrillHistory?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        BackHeader(
+            title = "履歴",
+            onBack = onBack,
+        )
+
+        if (uiState.history.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "履歴はまだありません",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF666666),
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                uiState.history.forEach { history ->
+                    HistoryRow(
+                        history = history,
+                        onDetail = { onDetail(history) },
+                        onDelete = { deleteTarget = history },
+                    )
+                }
+            }
+        }
+    }
+
+    deleteTarget?.let { history ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = {
+                Text(
+                    text = "履歴を削除",
+                    fontWeight = FontWeight.Black,
+                )
+            },
+            text = {
+                Text(text = "${history.completedAtText} の履歴を削除しますか？")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDelete(history)
+                        deleteTarget = null
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(text = "OK", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { deleteTarget = null },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Text(text = "キャンセル", fontWeight = FontWeight.Bold)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun HistoryRow(
+    history: DrillHistory,
+    onDetail: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = history.completedAtText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    text = history.scoreText(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                    color = if (history.hasWrongAnswers()) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        Color(0xFF222222)
+                    },
+                )
+                Text(
+                    text = history.settingsText(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF444444),
+                )
+            }
+
+            Button(
+                onClick = onDetail,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(text = "詳細", fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = onDelete,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) {
+                Text(text = "削除", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryDetailScreen(
+    history: DrillHistory?,
+    onBack: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        BackHeader(
+            title = "詳細",
+            onBack = onBack,
+        )
+
+        if (history == null) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "履歴が見つかりません",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            return@Column
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = history.completedAtText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    text = history.scoreText(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                    color = if (history.hasWrongAnswers()) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        Color(0xFF222222)
+                    },
+                )
+                Text(
+                    text = history.settingsText(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
+        ReviewList(
+            reviews = history.reviews,
+            showCorrectAnswer = true,
+            showRetryCount = true,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        )
+    }
+}
+
+private fun DrillHistory.settingsText(): String {
+    return "${leftNumberRange.label} ${operation.symbol} ${rightNumberRange.label}  " +
+        "${questionCount}問  ${timeLimitSeconds}秒"
+}
+
+private fun DrillHistory.scoreText(): String {
+    return "$correctCount/${totalQuestionCount()}"
+}
+
+private fun DrillHistory.hasWrongAnswers(): Boolean {
+    return correctCount < totalQuestionCount()
+}
+
+private fun DrillHistory.totalQuestionCount(): Int {
+    return reviews.size.takeIf { it > 0 } ?: questionCount
+}
+
+@Composable
+private fun BackHeader(
+    title: String,
+    onBack: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Button(
+            onClick = onBack,
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(text = "戻る", fontWeight = FontWeight.Bold)
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Black,
+        )
+    }
+}
+
+@Composable
 private fun ReviewList(
     reviews: List<AnswerReview>,
     showCorrectAnswer: Boolean,
@@ -635,8 +967,13 @@ private fun ReviewRow(
     } else {
         ""
     }
+    val unrecoverableText = if (showRetryCount && review.isUnrecoverable) {
+        "   不正解"
+    } else {
+        ""
+    }
     val answerText = if (showCorrectAnswer) {
-        "選択: $selectedText   正解: ${review.correctAnswer}$retryText"
+        "選択: $selectedText   正解: ${review.correctAnswer}$retryText$unrecoverableText"
     } else {
         "選択: $selectedText"
     }
