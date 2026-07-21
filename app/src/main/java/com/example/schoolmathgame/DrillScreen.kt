@@ -1,11 +1,39 @@
 package com.example.schoolmathgame
 
+import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,19 +41,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,11 +68,28 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
+
+private const val YoutubeUrl = "https://m.youtube.com/"
+private const val WifiLogTag = "SchoolMathWifi"
+private const val YoutubeUserAgent =
+    "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 
 @Composable
 fun DrillScreen() {
@@ -68,11 +117,11 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     uiState = uiState,
                     onTimeLimitChanged = viewModel::setTimeLimit,
                     onQuestionCountChanged = viewModel::setQuestionCount,
-                    onLeftNumberRangeChanged = viewModel::setLeftNumberRange,
-                    onRightNumberRangeChanged = viewModel::setRightNumberRange,
                     onOperationChanged = viewModel::setOperation,
                     onStart = viewModel::startDrill,
                     onHistory = viewModel::showHistory,
+                    onAdmin = viewModel::showAdmin,
+                    onYoutubeReward = viewModel::startYoutubeRewardSession,
                 )
 
                 DrillScreenState.Drill -> ActiveDrillScreen(
@@ -101,6 +150,23 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     history = uiState.selectedHistory,
                     onBack = viewModel::returnToHistory,
                 )
+
+                DrillScreenState.Admin -> AdminScreen(
+                    uiState = uiState,
+                    onBack = viewModel::returnToSettings,
+                    onUnlock = viewModel::unlockAdmin,
+                    onOperationEnabledChanged = viewModel::setOperationEnabled,
+                    onInAppYoutubeEnabledChanged = viewModel::setInAppYoutubeEnabled,
+                    onYoutubeMinutesPer100CorrectChanged = viewModel::setYoutubeMinutesPer100Correct,
+                    onSaveYoutubeWifiSettings = viewModel::saveYoutubeWifiSettings,
+                    onSavePassword = viewModel::saveParentPassword,
+                )
+
+                DrillScreenState.YoutubeReward -> YoutubeRewardScreen(
+                    uiState = uiState,
+                    onBack = viewModel::hideYoutubeReward,
+                    onTimerRunningChanged = viewModel::setYoutubeRewardTimerRunning,
+                )
             }
         }
     }
@@ -111,11 +177,11 @@ private fun SettingsScreen(
     uiState: DrillUiState,
     onTimeLimitChanged: (Int) -> Unit,
     onQuestionCountChanged: (Int) -> Unit,
-    onLeftNumberRangeChanged: (NumberRange) -> Unit,
-    onRightNumberRangeChanged: (NumberRange) -> Unit,
     onOperationChanged: (Operation) -> Unit,
     onStart: () -> Unit,
     onHistory: () -> Unit,
+    onAdmin: () -> Unit,
+    onYoutubeReward: () -> Unit,
 ) {
     Scaffold { paddingValues ->
         Box(
@@ -131,8 +197,10 @@ private fun SettingsScreen(
                         ),
                     ),
                 )
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(18.dp),
-            contentAlignment = Alignment.Center,
+            contentAlignment = Alignment.TopCenter,
         ) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -153,31 +221,12 @@ private fun SettingsScreen(
                         color = Color(0xFF16408F),
                     )
 
-                    Row(
+                    OperationSelector(
+                        selectedOperation = uiState.selectedOperation,
+                        enabledOperations = uiState.enabledOperations,
+                        onSelected = onOperationChanged,
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        val leftNumberRangeOptions = uiState.selectedOperation.leftNumberRangeOptions()
-                        val rightNumberRangeOptions = uiState.selectedOperation.rightNumberRangeOptions()
-                        NumberRangeDropdown(
-                            selectedRange = uiState.leftNumberRange,
-                            options = leftNumberRangeOptions,
-                            onSelected = onLeftNumberRangeChanged,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OperationDropdown(
-                            selectedOperation = uiState.selectedOperation,
-                            onSelected = onOperationChanged,
-                            modifier = Modifier.weight(0.9f),
-                        )
-                        NumberRangeDropdown(
-                            selectedRange = uiState.rightNumberRange,
-                            options = rightNumberRangeOptions,
-                            onSelected = onRightNumberRangeChanged,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                    )
 
                     TimerSlider(
                         seconds = uiState.timeLimitSeconds,
@@ -200,7 +249,7 @@ private fun SettingsScreen(
                             contentColor = Color.White,
                         ),
                     ) {
-                        Text(text = "start", fontSize = 24.sp, fontWeight = FontWeight.Black)
+                        Text(text = "スタート", fontSize = 24.sp, fontWeight = FontWeight.Black)
                     }
 
                     Button(
@@ -216,6 +265,40 @@ private fun SettingsScreen(
                     ) {
                         Text(text = "履歴", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
+
+                    Button(
+                        onClick = onYoutubeReward,
+                        enabled = uiState.isInAppYoutubeEnabled &&
+                            (uiState.isYoutubeRewardUnlimited || uiState.youtubeRewardAvailableSeconds > 0),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFF0033),
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text(
+                            text = "YouTube ${uiState.youtubeRewardTimeText()}",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+
+                    Button(
+                        onClick = onAdmin,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    ) {
+                        Text(text = "管理画面", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -223,106 +306,38 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun NumberRangeDropdown(
-    selectedRange: NumberRange,
-    options: List<NumberRange>,
-    onSelected: (NumberRange) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box(modifier = modifier) {
-        Button(
-            onClick = { expanded = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) {
-            Text(
-                text = selectedRange.label,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Black,
-                textAlign = TextAlign.Center,
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            options.forEach { range ->
-                DropdownMenuItem(
-                    text = { Text(text = range.label) },
-                    onClick = {
-                        onSelected(range)
-                        expanded = false
-                    },
-                )
-            }
-        }
-    }
-}
-
-private fun Operation.leftNumberRangeOptions(): List<NumberRange> {
-    return when (this) {
-        Operation.Multiply -> listOf(NumberRange.OneDigit)
-        Operation.Divide -> listOf(NumberRange.IncludeTwoDigits)
-        Operation.Add,
-        Operation.Subtract,
-            -> NumberRange.values().toList()
-    }
-}
-
-private fun Operation.rightNumberRangeOptions(): List<NumberRange> {
-    return when (this) {
-        Operation.Multiply,
-        Operation.Divide,
-            -> listOf(NumberRange.OneDigit)
-
-        Operation.Add,
-        Operation.Subtract,
-            -> NumberRange.values().toList()
-    }
-}
-
-@Composable
-private fun OperationDropdown(
+private fun OperationSelector(
     selectedOperation: Operation,
+    enabledOperations: Set<Operation>,
     onSelected: (Operation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box(modifier = modifier) {
-        Button(
-            onClick = { expanded = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
-            shape = RoundedCornerShape(8.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF86DC23),
-                contentColor = Color(0xFF16408F),
-            ),
-        ) {
-            Text(
-                text = selectedOperation.symbol,
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Black,
-                textAlign = TextAlign.Center,
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            Operation.values().forEach { operation ->
-                DropdownMenuItem(
-                    text = { Text(text = operation.menuLabel) },
-                    onClick = {
-                        onSelected(operation)
-                        expanded = false
-                    },
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Operation.values().forEach { operation ->
+            val selected = operation == selectedOperation
+            val enabled = operation in enabledOperations
+            Button(
+                onClick = { onSelected(operation) },
+                enabled = enabled,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selected) Color(0xFF86DC23) else Color(0xFF277AE8),
+                    contentColor = if (selected) Color(0xFF16408F) else Color.White,
+                    disabledContainerColor = Color(0xFFE5E7EB),
+                    disabledContentColor = Color(0xFF6B7280),
+                ),
+            ) {
+                Text(
+                    text = operation.symbol,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Black,
+                    textAlign = TextAlign.Center,
                 )
             }
         }
@@ -344,7 +359,7 @@ private fun TimerSlider(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "timer",
+                text = "タイマー",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Black,
                 color = Color(0xFF16408F),
@@ -380,7 +395,7 @@ private fun QuestionCountSlider(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "questions",
+                text = "問題数",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Black,
                 color = Color(0xFF16408F),
@@ -400,6 +415,1083 @@ private fun QuestionCountSlider(
             },
             valueRange = 5f..100f,
             steps = 18,
+        )
+    }
+}
+
+@Composable
+private fun YoutubeRewardScreen(
+    uiState: DrillUiState,
+    onBack: () -> Unit,
+    onTimerRunningChanged: (Boolean) -> Unit,
+) {
+    BackHandler(onBack = onBack)
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isScreenActive by remember { mutableStateOf(true) }
+    var youtubeWebView by remember { mutableStateOf<WebView?>(null) }
+    var isYoutubeLoaded by remember { mutableStateOf(false) }
+    var youtubeLoadError by remember { mutableStateOf<String?>(null) }
+    var showYoutubeWifiConnectionAlert by remember { mutableStateOf(false) }
+    var youtubeWifiConnectionCheckStartedAt by remember(uiState.youtubeWifiSsid) {
+        mutableStateOf(System.currentTimeMillis())
+    }
+    var hasWifiPermission by remember(uiState.youtubeWifiSsid) {
+        mutableStateOf(context.hasFineLocationPermission())
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasWifiPermission = granted
+    }
+
+    LaunchedEffect(uiState.youtubeWifiSsid, hasWifiPermission) {
+        if (
+            uiState.youtubeWifiSsid.isNotBlank() &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            !hasWifiPermission
+        ) {
+            permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> isScreenActive = true
+                Lifecycle.Event.ON_STOP -> {
+                    isScreenActive = false
+                    isYoutubeLoaded = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val wifiStatus = rememberYoutubeWifiStatus(
+        uiState = uiState,
+        hasWifiPermission = hasWifiPermission,
+        isScreenActive = isScreenActive,
+    )
+
+    LaunchedEffect(uiState.youtubeWifiSsid, isScreenActive) {
+        if (uiState.youtubeWifiSsid.isNotBlank() && isScreenActive) {
+            youtubeWifiConnectionCheckStartedAt = System.currentTimeMillis()
+            showYoutubeWifiConnectionAlert = false
+        }
+    }
+
+    LaunchedEffect(wifiStatus, uiState.youtubeWifiSsid, isScreenActive) {
+        if (uiState.youtubeWifiSsid.isBlank() || !isScreenActive) {
+            showYoutubeWifiConnectionAlert = false
+            return@LaunchedEffect
+        }
+        if (wifiStatus.startsWith("WiFi接続完了")) {
+            showYoutubeWifiConnectionAlert = false
+            return@LaunchedEffect
+        }
+
+        val elapsedMillis = System.currentTimeMillis() - youtubeWifiConnectionCheckStartedAt
+        val remainingMillis = 10_000L - elapsedMillis
+        if (remainingMillis > 0L) {
+            delay(remainingMillis)
+        }
+        if (!wifiStatus.startsWith("WiFi接続完了")) {
+            showYoutubeWifiConnectionAlert = true
+        }
+    }
+
+    LaunchedEffect(wifiStatus, uiState.youtubeWifiSsid, isScreenActive) {
+        val canLoadYoutube = uiState.youtubeWifiSsid.isBlank() ||
+            wifiStatus.startsWith("WiFi接続完了")
+        if (isScreenActive && canLoadYoutube) {
+            isYoutubeLoaded = false
+            youtubeLoadError = null
+            youtubeWebView?.loadUrl(YoutubeUrl)
+        }
+    }
+
+    LaunchedEffect(isScreenActive, isYoutubeLoaded, youtubeLoadError) {
+        onTimerRunningChanged(isScreenActive && isYoutubeLoaded && youtubeLoadError == null)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            onTimerRunningChanged(false)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Button(
+                onClick = onBack,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            ) {
+                Text(text = "戻る", fontWeight = FontWeight.Bold)
+            }
+            Text(
+                text = "残り ${uiState.youtubeRewardTimeText()}",
+                color = Color(0xFFFF0033),
+                fontSize = 20.sp,
+                lineHeight = 26.sp,
+                fontWeight = FontWeight.Black,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.End,
+            )
+        }
+        if (wifiStatus.isNotBlank()) {
+            Text(
+                text = wifiStatus,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFFFF7ED))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                color = Color(0xFF9A3412),
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        youtubeLoadError?.let { message ->
+            Text(
+                text = message,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFFFE4E6))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                color = Color(0xFFBE123C),
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        AndroidView(
+            factory = { context ->
+                WebView(context).apply {
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    webChromeClient = WebChromeClient()
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            if (url != "about:blank") {
+                                youtubeLoadError = null
+                                isYoutubeLoaded = true
+                            }
+                        }
+
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?,
+                        ) {
+                            if (request?.isForMainFrame == true) {
+                                isYoutubeLoaded = false
+                                youtubeLoadError = error?.description?.toString()
+                                    ?: "YouTubeを読み込めませんでした。"
+                            }
+                        }
+                    }
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    settings.loadWithOverviewMode = true
+                    settings.useWideViewPort = true
+                    settings.userAgentString = YoutubeUserAgent
+                    youtubeWebView = this
+                    if (uiState.youtubeWifiSsid.isBlank()) {
+                        isYoutubeLoaded = false
+                        loadUrl(YoutubeUrl)
+                    } else {
+                        loadUrl("about:blank")
+                    }
+                }
+            },
+            onRelease = { webView ->
+                if (youtubeWebView === webView) {
+                    youtubeWebView = null
+                }
+                webView.stopLoading()
+                webView.destroy()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+    }
+
+    if (showYoutubeWifiConnectionAlert) {
+        AlertDialog(
+            onDismissRequest = { showYoutubeWifiConnectionAlert = false },
+            title = { Text(text = "接続確認") },
+            text = { Text(text = "このアプリ内にある管理画面でWiFiの接続をしてください") },
+            confirmButton = {
+                TextButton(onClick = { showYoutubeWifiConnectionAlert = false }) {
+                    Text(text = "閉じる")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AdminScreen(
+    uiState: DrillUiState,
+    onBack: () -> Unit,
+    onUnlock: (String) -> Unit,
+    onOperationEnabledChanged: (Operation) -> Unit,
+    onInAppYoutubeEnabledChanged: (Boolean) -> Unit,
+    onYoutubeMinutesPer100CorrectChanged: (Int) -> Unit,
+    onSaveYoutubeWifiSettings: (String, String) -> Unit,
+    onSavePassword: (String, String) -> Boolean,
+) {
+    val context = LocalContext.current
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var showPasswordChangeFields by remember { mutableStateOf(false) }
+    var localPasswordError by remember { mutableStateOf<String?>(null) }
+    var youtubeWifiSsid by remember(uiState.youtubeWifiSsid) { mutableStateOf(uiState.youtubeWifiSsid) }
+    var youtubeWifiPassword by remember(uiState.youtubeWifiPassword) {
+        mutableStateOf(uiState.youtubeWifiPassword)
+    }
+    var showYoutubeWifiPassword by remember { mutableStateOf(false) }
+    var wifiSsids by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showWifiSsidList by remember { mutableStateOf(false) }
+    var wifiScanMessage by remember { mutableStateOf<String?>(null) }
+    var isWifiScanning by remember { mutableStateOf(false) }
+    var pendingWifiSsidListDisplay by remember { mutableStateOf(false) }
+    var wifiConnectionMessage by remember { mutableStateOf<String?>(null) }
+    var isWifiConnectionTesting by remember { mutableStateOf(false) }
+    var isWifiConnectionConfirmed by remember { mutableStateOf(false) }
+    var pendingWifiSsidAutoFill by remember { mutableStateOf(false) }
+    var wifiSsidAutoFillPermissionRequested by remember { mutableStateOf(false) }
+    var pendingWifiConnectionTest by remember { mutableStateOf(false) }
+    var wifiConnectionCallback by remember {
+        mutableStateOf<ConnectivityManager.NetworkCallback?>(null)
+    }
+
+    fun updateWifiSsidList(emptyMessage: String, showList: Boolean) {
+        wifiSsids = context.availableWifiSsids()
+        Log.d(WifiLogTag, "SSID list updated count=${wifiSsids.size} showList=$showList selected=$youtubeWifiSsid")
+        showWifiSsidList = showList && wifiSsids.isNotEmpty()
+        wifiScanMessage = if (wifiSsids.isEmpty()) emptyMessage else null
+    }
+
+    fun fillCurrentWifiSsid() {
+        if (uiState.youtubeWifiSsid.isNotBlank() || youtubeWifiSsid.isNotBlank()) return
+        context.currentConnectedWifiSsid()?.let { ssid ->
+            youtubeWifiSsid = ssid
+            isWifiConnectionConfirmed = false
+            wifiScanMessage = null
+        }
+    }
+
+    fun stopWifiConnectionTest() {
+        val callback = wifiConnectionCallback ?: return
+        val connectivityManager = context.getSystemService(
+            Context.CONNECTIVITY_SERVICE,
+        ) as ConnectivityManager
+        runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+        wifiConnectionCallback = null
+        isWifiConnectionTesting = false
+    }
+
+    fun startWifiConnectionTest() {
+        stopWifiConnectionTest()
+        val ssid = youtubeWifiSsid.trim()
+        val wifiPassword = youtubeWifiPassword
+        Log.d(WifiLogTag, "Admin connection test start ssid=$ssid passwordLength=${wifiPassword.length}")
+        if (ssid.isBlank()) {
+            isWifiConnectionConfirmed = false
+            Log.d(WifiLogTag, "Admin connection test blocked: blank ssid")
+            wifiConnectionMessage = "SSIDを入力してください。"
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            isWifiConnectionConfirmed = false
+            Log.d(WifiLogTag, "Admin connection test blocked: unsupported sdk=${Build.VERSION.SDK_INT}")
+            wifiConnectionMessage = "この端末ではアプリからのWiFi接続確認に対応していません。"
+            return
+        }
+
+        val currentWifi = context.currentWifiConnection()
+        Log.d(
+            WifiLogTag,
+            "Current wifi=${currentWifi?.ssid} hasInternet=${currentWifi?.hasInternet} validated=${currentWifi?.isValidated}",
+        )
+        if (currentWifi?.ssid == ssid) {
+            if (currentWifi.isValidated) {
+                wifiConnectionMessage = "接続できました: $ssid"
+                isWifiConnectionConfirmed = true
+                Log.d(WifiLogTag, "Admin connection test success: already connected and validated")
+            } else {
+                wifiConnectionMessage = "WiFiに接続済みですが、インターネットに接続できません。"
+                isWifiConnectionConfirmed = false
+                Log.d(WifiLogTag, "Admin connection test failed: already connected but not validated")
+            }
+            return
+        }
+
+        val connectivityManager = context.getSystemService(
+            Context.CONNECTIVITY_SERVICE,
+        ) as ConnectivityManager
+        val mainHandler = Handler(Looper.getMainLooper())
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(WifiLogTag, "Admin request onAvailable network=$network")
+                mainHandler.post {
+                    wifiConnectionMessage = "WiFi接続中です。インターネット接続を確認しています。"
+                }
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                val hasInternet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                val validated = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                Log.d(
+                    WifiLogTag,
+                    "Admin request onCapabilitiesChanged network=$network hasInternet=$hasInternet validated=$validated",
+                )
+                mainHandler.post {
+                    if (validated) {
+                        wifiConnectionMessage = "接続できました: $ssid"
+                        isWifiConnectionConfirmed = true
+                        stopWifiConnectionTest()
+                    } else if (hasInternet) {
+                        wifiConnectionMessage = "WiFi接続中です。インターネット接続を確認しています。"
+                    } else {
+                        wifiConnectionMessage = "WiFiに接続しましたが、インターネットに接続できません。"
+                        isWifiConnectionConfirmed = false
+                    }
+                }
+            }
+
+            override fun onUnavailable() {
+                Log.d(WifiLogTag, "Admin request onUnavailable ssid=$ssid")
+                mainHandler.post {
+                    wifiConnectionMessage = "接続できませんでした。SSIDまたはパスワードを確認してください。"
+                    isWifiConnectionConfirmed = false
+                    stopWifiConnectionTest()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                Log.d(WifiLogTag, "Admin request onLost network=$network")
+                mainHandler.post {
+                    wifiConnectionMessage = "接続が切れました。"
+                    isWifiConnectionConfirmed = false
+                    stopWifiConnectionTest()
+                }
+            }
+        }
+
+        runCatching {
+            val request = context.wifiNetworkRequest(ssid = ssid, password = wifiPassword)
+            Log.d(WifiLogTag, "Admin requestNetwork start ssid=$ssid")
+            connectivityManager.requestNetwork(request, callback, 15_000)
+            wifiConnectionCallback = callback
+            isWifiConnectionTesting = true
+            isWifiConnectionConfirmed = false
+            wifiConnectionMessage = "接続確認中です。"
+        }.onFailure { throwable ->
+            Log.e(WifiLogTag, "Admin requestNetwork failed to start ssid=$ssid", throwable)
+            wifiConnectionCallback = null
+            isWifiConnectionTesting = false
+            isWifiConnectionConfirmed = false
+            wifiConnectionMessage = throwable.message ?: "SSIDまたはWiFiパスワードを確認してください。"
+        }
+    }
+
+    val wifiScanPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        Log.d(WifiLogTag, "Permission result=$grants")
+        if (grants.values.all { granted -> granted }) {
+            if (pendingWifiSsidAutoFill) {
+                pendingWifiSsidAutoFill = false
+                fillCurrentWifiSsid()
+            } else if (pendingWifiConnectionTest) {
+                pendingWifiConnectionTest = false
+                startWifiConnectionTest()
+            } else {
+                isWifiScanning = context.requestWifiScan()
+                pendingWifiSsidListDisplay = isWifiScanning
+                val emptyMessage = if (isWifiScanning) {
+                        "SSIDを取得中です。しばらく待ってから一覧を確認してください。"
+                    } else {
+                        "SSID取得を開始できませんでした。端末の位置情報とWiFiを有効にしてください。"
+                    }
+                updateWifiSsidList(
+                    emptyMessage = emptyMessage,
+                    showList = !isWifiScanning,
+                )
+            }
+        } else {
+            pendingWifiSsidAutoFill = false
+            pendingWifiConnectionTest = false
+            pendingWifiSsidListDisplay = false
+            isWifiScanning = false
+            wifiScanMessage = "SSID取得にはWiFiと位置情報の権限が必要です。"
+            wifiConnectionMessage = "接続確認にはWiFiと位置情報の権限が必要です。"
+            isWifiConnectionConfirmed = false
+        }
+    }
+
+    LaunchedEffect(uiState.isAdminAuthenticated, uiState.youtubeWifiSsid) {
+        if (!uiState.isAdminAuthenticated || uiState.youtubeWifiSsid.isNotBlank() || youtubeWifiSsid.isNotBlank()) {
+            return@LaunchedEffect
+        }
+        val missingPermissions = context.missingWifiScanPermissions()
+        if (missingPermissions.isEmpty()) {
+            fillCurrentWifiSsid()
+        } else if (!wifiSsidAutoFillPermissionRequested) {
+            wifiSsidAutoFillPermissionRequested = true
+            pendingWifiSsidAutoFill = true
+            wifiScanPermissionLauncher.launch(missingPermissions)
+        }
+    }
+
+    fun requestWifiConnectionTest() {
+        val missingPermissions = context.missingWifiScanPermissions()
+        Log.d(WifiLogTag, "Request admin connection test missingPermissions=${missingPermissions.joinToString()}")
+        if (missingPermissions.isNotEmpty()) {
+            pendingWifiConnectionTest = true
+            wifiConnectionMessage = "接続確認に必要な権限を確認しています。"
+            wifiScanPermissionLauncher.launch(missingPermissions)
+        } else {
+            startWifiConnectionTest()
+        }
+    }
+
+    fun requestWifiSsidScan() {
+        val missingPermissions = context.missingWifiScanPermissions()
+        Log.d(WifiLogTag, "Request SSID scan missingPermissions=${missingPermissions.joinToString()}")
+        if (missingPermissions.isNotEmpty()) {
+            pendingWifiConnectionTest = false
+            pendingWifiSsidListDisplay = true
+            wifiScanPermissionLauncher.launch(missingPermissions)
+        } else {
+            isWifiScanning = context.requestWifiScan()
+            Log.d(WifiLogTag, "SSID scan requested started=$isWifiScanning")
+            pendingWifiSsidListDisplay = isWifiScanning
+            val emptyMessage = if (isWifiScanning) {
+                "SSIDを取得中です。しばらく待ってから一覧を確認してください。"
+            } else {
+                "SSID取得を開始できませんでした。端末の位置情報とWiFiを有効にしてください。"
+            }
+            updateWifiSsidList(
+                emptyMessage = emptyMessage,
+                showList = !isWifiScanning,
+            )
+        }
+    }
+
+    DisposableEffect(uiState.isAdminAuthenticated) {
+        if (!uiState.isAdminAuthenticated) {
+            onDispose { }
+        } else {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (intent.action != WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) return
+                    isWifiScanning = false
+                    if (pendingWifiSsidListDisplay) {
+                        pendingWifiSsidListDisplay = false
+                        updateWifiSsidList(
+                            emptyMessage = "SSIDを取得できませんでした。端末の位置情報とWiFiを有効にしてください。",
+                            showList = true,
+                        )
+                    } else {
+                        wifiSsids = context.availableWifiSsids()
+                    }
+                }
+            }
+            val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                context.registerReceiver(receiver, filter)
+            }
+            onDispose {
+                runCatching { context.unregisterReceiver(receiver) }
+                pendingWifiSsidListDisplay = false
+                stopWifiConnectionTest()
+            }
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        item(key = "admin-header") {
+            BackHeader(title = "管理画面", onBack = onBack)
+        }
+
+        if (!uiState.isAdminAuthenticated) {
+            item(key = "admin-auth") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            text = "パスワードを入力してください",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Black,
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it.filter(Char::isDigit) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("パスワード") },
+                            singleLine = true,
+                            visualTransformation = if (showPassword) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            trailingIcon = {
+                                PasswordVisibilityButton(
+                                    visible = showPassword,
+                                    onClick = { showPassword = !showPassword },
+                                )
+                            },
+                        )
+                        uiState.adminAuthError?.let { message ->
+                            Text(
+                                text = message,
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        Button(
+                            onClick = { onUnlock(password) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(text = "開く", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+            return@LazyColumn
+        }
+
+        item(key = "admin-settings") {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    OperationAvailabilitySelector(
+                        enabledOperations = uiState.enabledOperations,
+                        operationProgress = uiState.operationProgress,
+                        onOperationEnabledChanged = onOperationEnabledChanged,
+                    )
+
+                    InAppYoutubeSetting(
+                        enabled = uiState.isInAppYoutubeEnabled,
+                        onEnabledChanged = onInAppYoutubeEnabledChanged,
+                    )
+
+                    YoutubeRewardSlider(
+                        minutes = uiState.youtubeMinutesPer100Correct,
+                        onMinutesChanged = onYoutubeMinutesPer100CorrectChanged,
+                    )
+
+                    Text(
+                        text = "総得点 ${uiState.youtubeRewardTotalScore}点 / YouTube残り ${uiState.youtubeRewardTimeText()}",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 16.sp,
+                        lineHeight = 22.sp,
+                        fontWeight = FontWeight.Black,
+                    )
+
+                    Text(
+                        text = "YouTube WiFi",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Black,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .width(180.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.White,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text(
+                                    text = "SSID",
+                                    color = Color(0xFF666666),
+                                    fontSize = 12.sp,
+                                    lineHeight = 14.sp,
+                                )
+                                Text(
+                                    text = youtubeWifiSsid.ifBlank { "未選択" },
+                                    color = Color(0xFF16408F),
+                                    fontSize = 16.sp,
+                                    lineHeight = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = { requestWifiSsidScan() },
+                            modifier = Modifier
+                                .width(96.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text(
+                                text = if (isWifiScanning) "取得中" else "SSID取得",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                            )
+                        }
+                        OutlinedTextField(
+                            value = youtubeWifiPassword,
+                            onValueChange = {
+                                youtubeWifiPassword = it
+                                isWifiConnectionConfirmed = false
+                            },
+                            modifier = Modifier.width(180.dp),
+                            label = { Text("WiFiパスワード") },
+                            singleLine = true,
+                            visualTransformation = if (showYoutubeWifiPassword) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                PasswordVisibilityButton(
+                                    visible = showYoutubeWifiPassword,
+                                    onClick = { showYoutubeWifiPassword = !showYoutubeWifiPassword },
+                                )
+                            },
+                        )
+                        Button(
+                            onClick = { requestWifiConnectionTest() },
+                            enabled = !isWifiConnectionTesting,
+                            modifier = Modifier
+                                .width(86.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text(
+                                text = if (isWifiConnectionTesting) "確認中" else if (isWifiConnectionConfirmed) "確認済" else "確認",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                onSaveYoutubeWifiSettings(youtubeWifiSsid, youtubeWifiPassword)
+                                requestWifiConnectionTest()
+                            },
+                            modifier = Modifier
+                                .width(72.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text(
+                                text = "保存",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    wifiScanMessage?.let { message ->
+                        Text(
+                            text = message,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    wifiConnectionMessage?.let { message ->
+                        Text(
+                            text = message,
+                            color = if (message.contains("できました")) {
+                                Color(0xFF047857)
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+
+        item(key = "admin-password") {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = "パスワード変更",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Black,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = currentPassword,
+                            onValueChange = { currentPassword = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("現在") },
+                            singleLine = true,
+                            visualTransformation = if (showPasswordChangeFields) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        )
+                        OutlinedTextField(
+                            value = newPassword,
+                            onValueChange = { newPassword = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("新規") },
+                            singleLine = true,
+                            visualTransformation = if (showPasswordChangeFields) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        )
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it.filter(Char::isDigit) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("確認") },
+                            singleLine = true,
+                            visualTransformation = if (showPasswordChangeFields) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            trailingIcon = {
+                                PasswordVisibilityButton(
+                                    visible = showPasswordChangeFields,
+                                    onClick = { showPasswordChangeFields = !showPasswordChangeFields },
+                                )
+                            },
+                        )
+                        Button(
+                            onClick = {
+                                if (newPassword != confirmPassword) {
+                                    localPasswordError = "確認用のパスワードが一致しません。"
+                                    return@Button
+                                }
+                                localPasswordError = null
+                                if (onSavePassword(currentPassword, newPassword)) {
+                                    currentPassword = ""
+                                    newPassword = ""
+                                    confirmPassword = ""
+                                }
+                            },
+                            modifier = Modifier.height(56.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(text = "保存", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    localPasswordError?.let { message ->
+                        Text(
+                            text = message,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    uiState.parentPasswordMessage?.let { message ->
+                        Text(
+                            text = message,
+                            color = if (message.contains("保存")) Color(0xFF047857) else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showWifiSsidList) {
+        AlertDialog(
+            onDismissRequest = { showWifiSsidList = false },
+            title = {
+                Text(text = "SSIDを選択")
+            },
+            text = {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    wifiSsids.forEach { ssid ->
+                        item(key = ssid) {
+                            Button(
+                                onClick = {
+                                    youtubeWifiSsid = ssid
+                                    isWifiConnectionConfirmed = false
+                                    showWifiSsidList = false
+                                    wifiScanMessage = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                            ) {
+                                Text(
+                                    text = ssid,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showWifiSsidList = false },
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(text = "閉じる", fontWeight = FontWeight.Bold)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun OperationAvailabilitySelector(
+    enabledOperations: Set<Operation>,
+    operationProgress: List<OperationProgress>,
+    onOperationEnabledChanged: (Operation) -> Unit,
+) {
+    val progressByOperation = operationProgress.associateBy { progress -> progress.operation }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "出題できる四則演算",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Black,
+            color = Color(0xFF16408F),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Operation.values().forEach { operation ->
+                val enabled = operation in enabledOperations
+                val canDisable = enabledOperations.size > 1 || !enabled
+                val progress = progressByOperation[operation]
+                Button(
+                    onClick = { onOperationEnabledChanged(operation) },
+                    enabled = canDisable,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(56.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (enabled) Color(0xFF86DC23) else Color(0xFFE5E7EB),
+                        contentColor = if (enabled) Color(0xFF16408F) else Color(0xFF6B7280),
+                        disabledContainerColor = Color(0xFF86DC23),
+                        disabledContentColor = Color(0xFF16408F),
+                    ),
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            text = operation.symbol,
+                            fontSize = 22.sp,
+                            lineHeight = 24.sp,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            text = "${progress?.solvedCount ?: 0}問 / ${progress?.percentage ?: 0}%",
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InAppYoutubeSetting(
+    enabled: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "アプリ内YouTube",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Black,
+            color = Color(0xFF16408F),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = { onEnabledChanged(true) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (enabled) Color(0xFF86DC23) else Color(0xFFE5E7EB),
+                    contentColor = if (enabled) Color(0xFF16408F) else Color(0xFF6B7280),
+                ),
+            ) {
+                Text(text = "有効", fontWeight = FontWeight.Black)
+            }
+
+            Button(
+                onClick = { onEnabledChanged(false) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (!enabled) Color(0xFF86DC23) else Color(0xFFE5E7EB),
+                    contentColor = if (!enabled) Color(0xFF16408F) else Color(0xFF6B7280),
+                ),
+            ) {
+                Text(text = "無効", fontWeight = FontWeight.Black)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PasswordVisibilityButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick) {
+        Text(
+            text = if (visible) "隠す" else "表示",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun YoutubeRewardSlider(
+    minutes: Int,
+    onMinutesChanged: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "100問正解につき可能な視聴時間",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+            Text(
+                text = "${minutes}分",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+        }
+        Slider(
+            value = minutes.toFloat(),
+            onValueChange = {
+                val rounded = ((it + 2.5f).toInt() / 5) * 5
+                onMinutesChanged(rounded.coerceIn(0, 120))
+            },
+            valueRange = 0f..120f,
+            steps = 23,
         )
     }
 }
@@ -1010,5 +2102,304 @@ private fun ReviewRow(
             fontSize = 15.sp,
             lineHeight = 20.sp,
         )
+    }
+}
+
+@Composable
+private fun rememberYoutubeWifiStatus(
+    uiState: DrillUiState,
+    hasWifiPermission: Boolean,
+    isScreenActive: Boolean,
+): String {
+    val context = LocalContext.current
+    var status by remember(uiState.youtubeWifiSsid) {
+        mutableStateOf(
+            if (uiState.youtubeWifiSsid.isBlank()) {
+                "YouTube WiFiが未設定です。現在のネットワークで開きます。"
+            } else {
+                "WiFi接続中: ${uiState.youtubeWifiSsid}"
+            },
+        )
+    }
+
+    DisposableEffect(
+        uiState.youtubeWifiSsid,
+        uiState.youtubeWifiPassword,
+        hasWifiPermission,
+        isScreenActive,
+    ) {
+        val ssid = uiState.youtubeWifiSsid
+        if (!isScreenActive) {
+            Log.d(WifiLogTag, "YouTube wifi paused: screen inactive")
+            status = "アプリを表示するとWiFi接続を開始します。"
+            onDispose { }
+        } else if (ssid.isBlank()) {
+            Log.d(WifiLogTag, "YouTube wifi skipped: blank ssid")
+            onDispose { }
+        } else if (!hasWifiPermission) {
+            Log.d(WifiLogTag, "YouTube wifi blocked: missing fine location permission")
+            status = "WiFi接続には位置情報権限が必要です。"
+            onDispose { }
+        } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Log.d(WifiLogTag, "YouTube wifi blocked: unsupported sdk=${Build.VERSION.SDK_INT}")
+            status = "この端末ではアプリからのWiFi接続リクエストに対応していません。"
+            onDispose { }
+        } else {
+            val connectivityManager = context.getSystemService(
+                Context.CONNECTIVITY_SERVICE,
+            ) as ConnectivityManager
+            val currentWifi = context.currentWifiConnection()
+            Log.d(
+                WifiLogTag,
+                "YouTube wifi start ssid=$ssid current=${currentWifi?.ssid} hasInternet=${currentWifi?.hasInternet} validated=${currentWifi?.isValidated}",
+            )
+            if (currentWifi?.ssid == ssid) {
+                if (currentWifi.isValidated) {
+                    connectivityManager.bindProcessToNetwork(currentWifi.network)
+                    status = "WiFi接続完了: $ssid"
+                    Log.d(WifiLogTag, "YouTube wifi success: already connected and validated")
+                } else {
+                    status = "WiFiに接続済みですが、インターネットに接続できません。"
+                    Log.d(WifiLogTag, "YouTube wifi failed: already connected but not validated")
+                }
+                onDispose {
+                    connectivityManager.bindProcessToNetwork(null)
+                }
+            } else {
+            val mainHandler = Handler(Looper.getMainLooper())
+            var registered = false
+            var bound = false
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(WifiLogTag, "YouTube request onAvailable network=$network")
+                    mainHandler.post {
+                        status = "WiFi接続中: $ssid"
+                    }
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    val hasInternet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    val validated = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    Log.d(
+                        WifiLogTag,
+                        "YouTube request onCapabilitiesChanged network=$network hasInternet=$hasInternet validated=$validated",
+                    )
+                    mainHandler.post {
+                    if (validated) {
+                        if (!bound) {
+                            connectivityManager.bindProcessToNetwork(network)
+                            bound = true
+                        }
+                        status = "WiFi接続完了: $ssid"
+                    } else if (hasInternet) {
+                        status = "WiFi接続中: $ssid / インターネット確認中"
+                        } else {
+                            status = "WiFiに接続しましたが、インターネットに接続できません。"
+                        }
+                    }
+                }
+
+                override fun onUnavailable() {
+                    Log.d(WifiLogTag, "YouTube request onUnavailable ssid=$ssid")
+                    mainHandler.post {
+                        status = "WiFiに接続できませんでした。"
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    Log.d(WifiLogTag, "YouTube request onLost network=$network")
+                    mainHandler.post {
+                        status = "WiFi接続が切れました。"
+                    }
+                }
+            }
+
+            runCatching {
+                val request = context.wifiNetworkRequest(
+                    ssid = ssid,
+                    password = uiState.youtubeWifiPassword,
+                )
+                Log.d(WifiLogTag, "YouTube requestNetwork start ssid=$ssid passwordLength=${uiState.youtubeWifiPassword.length}")
+                connectivityManager.requestNetwork(request, callback)
+                registered = true
+            }.onFailure { throwable ->
+                Log.e(WifiLogTag, "YouTube requestNetwork failed to start ssid=$ssid", throwable)
+                status = throwable.message ?: "WiFi接続リクエストを開始できませんでした。"
+            }
+
+            onDispose {
+                connectivityManager.bindProcessToNetwork(null)
+                if (registered) {
+                    runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+                }
+            }
+            }
+        }
+    }
+
+    return status
+}
+
+private fun Context.hasFineLocationPermission(): Boolean =
+    ContextCompat.checkSelfPermission(
+        this,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+
+private fun Context.missingWifiScanPermissions(): Array<String> {
+    val requiredPermissions = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+    }
+    return requiredPermissions
+        .filter { permission ->
+            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+        }
+        .toTypedArray()
+}
+
+@Suppress("DEPRECATION")
+private fun Context.currentConnectedWifiSsid(): String? {
+    return currentWifiConnection()?.ssid
+}
+
+@Suppress("DEPRECATION")
+private fun Context.currentWifiConnection(): CurrentWifiConnection? {
+    val missingPermissions = missingWifiScanPermissions()
+    if (missingPermissions.isNotEmpty()) {
+        Log.d(WifiLogTag, "Current wifi unavailable: missingPermissions=${missingPermissions.joinToString()}")
+        return null
+    }
+
+    val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: return null
+    val activeNetwork = connectivityManager.activeNetwork ?: return null
+    val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return null
+    if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        Log.d(WifiLogTag, "Current network is not wifi capabilities=$capabilities")
+        return null
+    }
+
+    val ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        (capabilities.transportInfo as? WifiInfo)?.ssid
+    } else {
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        wifiManager?.connectionInfo?.ssid
+    }
+        return CurrentWifiConnection(
+            ssid = ssid?.normalizedSsid() ?: return null,
+            network = activeNetwork,
+            hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+            isValidated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+    )
+}
+
+private fun Context.wifiNetworkRequest(
+    ssid: String,
+    password: String,
+): NetworkRequest {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        error("この端末ではアプリからのWiFi接続リクエストに対応していません。")
+    }
+
+    val specifierBuilder = WifiNetworkSpecifier.Builder()
+        .setSsid(ssid)
+    val security = wifiSecurityForSsid(ssid)
+    Log.d(WifiLogTag, "Build wifi request ssid=$ssid security=$security passwordLength=${password.length}")
+    when {
+        security == WifiSecurity.Open -> Unit
+        password.length < 8 -> error("WiFiパスワードは8文字以上で入力してください。")
+        security == WifiSecurity.Wpa3 -> specifierBuilder.setWpa3Passphrase(password)
+        else -> specifierBuilder.setWpa2Passphrase(password)
+    }
+    return NetworkRequest.Builder()
+        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        .setNetworkSpecifier(specifierBuilder.build())
+        .build()
+}
+
+@Suppress("DEPRECATION")
+private fun Context.wifiSecurityForSsid(ssid: String): WifiSecurity {
+    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        ?: return WifiSecurity.Wpa2
+    val scanResults = wifiManager.scanResults
+    val capabilities = scanResults
+        .firstOrNull { scanResult -> scanResult.SSID.normalizedSsid() == ssid }
+        ?.capabilities
+        .orEmpty()
+    val security = when {
+        "SAE" in capabilities -> WifiSecurity.Wpa3
+        "PSK" in capabilities -> WifiSecurity.Wpa2
+        "EAP" in capabilities || "WEP" in capabilities -> WifiSecurity.Wpa2
+        capabilities.isBlank() -> WifiSecurity.Wpa2
+        else -> WifiSecurity.Open
+    }
+    Log.d(
+        WifiLogTag,
+        "Security detected ssid=$ssid security=$security capabilities=$capabilities scanCount=${scanResults.size}",
+    )
+    return security
+}
+
+private enum class WifiSecurity {
+    Open,
+    Wpa2,
+    Wpa3,
+}
+
+private data class CurrentWifiConnection(
+    val ssid: String,
+    val network: Network,
+    val hasInternet: Boolean,
+    val isValidated: Boolean,
+)
+
+@Suppress("DEPRECATION")
+private fun Context.requestWifiScan(): Boolean {
+    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        ?: return false
+    return runCatching { wifiManager.startScan() }
+        .onFailure { throwable -> Log.e(WifiLogTag, "startScan failed", throwable) }
+        .getOrDefault(false)
+}
+
+@Suppress("DEPRECATION")
+private fun Context.availableWifiSsids(): List<String> {
+    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        ?: return emptyList()
+    val scanResults = wifiManager.scanResults
+    Log.d(WifiLogTag, "Read scanResults count=${scanResults.size}")
+    return scanResults
+        .mapNotNull { scanResult -> scanResult.SSID.normalizedSsid() }
+        .distinct()
+        .sorted()
+}
+
+private fun String.normalizedSsid(): String? {
+    val ssid = trim().trim('"')
+    return ssid.takeIf { it.isNotBlank() && it != WifiManager.UNKNOWN_SSID }
+}
+
+private fun DrillUiState.youtubeRewardTimeText(): String {
+    return if (isYoutubeRewardUnlimited) {
+        "無制限"
+    } else {
+        youtubeRewardAvailableSeconds.formatRewardTimeText()
+    }
+}
+
+private fun Int.formatRewardTimeText(): String {
+    val safeSeconds = coerceAtLeast(0)
+    val minutes = safeSeconds / 60
+    val seconds = safeSeconds % 60
+    return when {
+        minutes == 0 -> "${seconds}秒"
+        seconds == 0 -> "${minutes}分"
+        else -> "${minutes}分${seconds}秒"
     }
 }

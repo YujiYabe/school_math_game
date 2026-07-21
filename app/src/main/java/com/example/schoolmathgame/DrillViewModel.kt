@@ -2,9 +2,13 @@ package com.example.schoolmathgame
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import java.io.File
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -20,16 +24,21 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val TotalQuestionCount = 100
+private const val DefaultQuestionCount = 5
 private const val TimerTickMillis = 50L
 private const val ChoiceCount = 4
-private const val DefaultTimeLimitSeconds = 3
+private const val DefaultTimeLimitSeconds = 30
 private const val MinTimeLimitSeconds = 1
 private const val MaxTimeLimitSeconds = 30
 private const val MinQuestionCount = 5
 private const val MaxQuestionCount = 100
 private const val MaxHistoryCount = 50
 private const val MaxRetryCount = 2
+private const val DefaultYoutubeMinutesPer100Correct = 30
+private const val DefaultYoutubeRewardUnlimited = false
+private const val DefaultInAppYoutubeEnabled = true
+private const val MinParentPasswordLength = 4
+private const val DefaultParentPassword = ""
 
 enum class DrillScreenState {
     Settings,
@@ -38,6 +47,8 @@ enum class DrillScreenState {
     Result,
     History,
     HistoryDetail,
+    Admin,
+    YoutubeReward,
 }
 
 enum class NumberRange(val label: String) {
@@ -45,12 +56,14 @@ enum class NumberRange(val label: String) {
     IncludeTwoDigits("1〜99"),
 }
 
-enum class Operation(val symbol: String, val menuLabel: String) {
-    Add("+", "+"),
-    Subtract("-", "-"),
-    Multiply("×", "×"),
-    Divide("÷", "÷"),
+enum class Operation(val symbol: String) {
+    Add("+"),
+    Subtract("-"),
+    Multiply("×"),
+    Divide("÷"),
 }
+
+private val DefaultEnabledOperations = Operation.values().toSet()
 
 data class MathProblem(
     val left: Int,
@@ -113,13 +126,21 @@ data class DrillHistory(
         get() = HistoryDateFormat.format(Date(completedAtMillis))
 }
 
+data class OperationProgress(
+    val operation: Operation,
+    val solvedCount: Int,
+    val percentage: Int,
+)
+
 data class DrillUiState(
     val screen: DrillScreenState = DrillScreenState.Settings,
     val timeLimitSeconds: Int = DefaultTimeLimitSeconds,
-    val questionCount: Int = TotalQuestionCount,
+    val questionCount: Int = DefaultQuestionCount,
     val leftNumberRange: NumberRange = NumberRange.OneDigit,
     val rightNumberRange: NumberRange = NumberRange.OneDigit,
     val selectedOperation: Operation = Operation.Add,
+    val enabledOperations: Set<Operation> = DefaultEnabledOperations,
+    val operationProgress: List<OperationProgress> = emptyList(),
     val currentQuestionNumber: Int = 0,
     val correctCount: Int = 0,
     val currentProblem: MathProblem? = null,
@@ -131,6 +152,16 @@ data class DrillUiState(
     val selectedHistory: DrillHistory? = null,
     val isRetryMode: Boolean = false,
     val remainingMillis: Long = 0L,
+    val isAdminAuthenticated: Boolean = false,
+    val adminAuthError: String? = null,
+    val parentPasswordMessage: String? = null,
+    val youtubeMinutesPer100Correct: Int = DefaultYoutubeMinutesPer100Correct,
+    val youtubeRewardTotalScore: Int = 0,
+    val youtubeRewardAvailableSeconds: Int = 0,
+    val isYoutubeRewardUnlimited: Boolean = DefaultYoutubeRewardUnlimited,
+    val isInAppYoutubeEnabled: Boolean = DefaultInAppYoutubeEnabled,
+    val youtubeWifiSsid: String = "",
+    val youtubeWifiPassword: String = "",
 ) {
     val activeQuestionCount: Int
         get() = if (isRetryMode) retryProblems.size else questionCount
@@ -147,42 +178,222 @@ data class DrillUiState(
 
 private data class DrillSettings(
     val timeLimitSeconds: Int = DefaultTimeLimitSeconds,
-    val questionCount: Int = TotalQuestionCount,
+    val questionCount: Int = DefaultQuestionCount,
     val leftNumberRange: NumberRange = NumberRange.OneDigit,
     val rightNumberRange: NumberRange = NumberRange.OneDigit,
     val selectedOperation: Operation = Operation.Add,
+    val enabledOperations: Set<Operation> = DefaultEnabledOperations,
+    val operationSolvedCounts: Map<Operation, Int> = emptyMap(),
+    val parentPasswordSalt: String = "",
+    val parentPasswordHash: String = "",
+    val youtubeMinutesPer100Correct: Int = DefaultYoutubeMinutesPer100Correct,
+    val youtubeRewardCorrectCount: Int = 0,
+    val youtubeRewardUsedSeconds: Int = 0,
+    val isYoutubeRewardUnlimited: Boolean = DefaultYoutubeRewardUnlimited,
+    val isInAppYoutubeEnabled: Boolean = DefaultInAppYoutubeEnabled,
+    val youtubeWifiSsid: String = "",
+    val youtubeWifiPassword: String = "",
 )
 
 private val DefaultDrillSettings = DrillSettings()
 
 private class DrillSettingsStore(context: Context) {
+    private val settingsFile = File(context.filesDir, SettingsFileName)
     private val preferences: SharedPreferences = context.getSharedPreferences(
         "drill_settings",
         Context.MODE_PRIVATE,
     )
 
     fun load(): DrillSettings {
+        val fileSettings = readSettingsFile()
+        if (fileSettings != null) return fileSettings
+
+        val migratedSettings = readPreferences()
+        writeSettingsFile(migratedSettings)
+        return migratedSettings
+    }
+
+    fun save(settings: DrillSettings) {
+        val current = load()
+        writeSettingsFile(
+            current.copy(
+                timeLimitSeconds = settings.timeLimitSeconds,
+                questionCount = settings.questionCount,
+                leftNumberRange = settings.leftNumberRange,
+                rightNumberRange = settings.rightNumberRange,
+                selectedOperation = settings.selectedOperation,
+                enabledOperations = settings.enabledOperations.sanitizedEnabledOperations(),
+            ),
+        )
+    }
+
+    fun saveEnabledOperations(enabledOperations: Set<Operation>) {
+        writeSettingsFile(
+            load().copy(enabledOperations = enabledOperations.sanitizedEnabledOperations()),
+        )
+    }
+
+    fun addOperationSolvedCount(operation: Operation, solvedCount: Int) {
+        if (solvedCount <= 0) return
+
+        val current = load()
+        writeSettingsFile(
+            current.copy(
+                operationSolvedCounts = current.operationSolvedCounts +
+                    (operation to ((current.operationSolvedCounts[operation] ?: 0) + solvedCount)),
+            ),
+        )
+    }
+
+    fun saveParentPasswordHash(salt: String, hash: String) {
+        writeSettingsFile(load().copy(parentPasswordSalt = salt, parentPasswordHash = hash))
+    }
+
+    fun saveYoutubeMinutesPer100Correct(minutes: Int) {
+        writeSettingsFile(
+            load().copy(
+                youtubeMinutesPer100Correct = minutes.coerceIn(0, 120),
+                isYoutubeRewardUnlimited = false,
+            ),
+        )
+    }
+
+    fun addYoutubeRewardCorrectCount(correctCount: Int) {
+        if (correctCount <= 0) return
+
+        val current = load()
+        writeSettingsFile(
+            current.copy(youtubeRewardCorrectCount = current.youtubeRewardCorrectCount + correctCount),
+        )
+    }
+
+    fun saveYoutubeRewardUsedSeconds(seconds: Int) {
+        writeSettingsFile(load().copy(youtubeRewardUsedSeconds = seconds.coerceAtLeast(0)))
+    }
+
+    fun saveYoutubeWifiSettings(ssid: String, password: String) {
+        writeSettingsFile(
+            load().copy(
+                youtubeWifiSsid = ssid.trim(),
+                youtubeWifiPassword = password,
+            ),
+        )
+    }
+
+    fun saveInAppYoutubeEnabled(enabled: Boolean) {
+        writeSettingsFile(load().copy(isInAppYoutubeEnabled = enabled))
+    }
+
+    private fun readSettingsFile(): DrillSettings? {
+        if (!settingsFile.exists()) return null
+        return runCatching {
+            JSONObject(settingsFile.readText()).toDrillSettings()
+        }.getOrNull()
+    }
+
+    private fun writeSettingsFile(settings: DrillSettings) {
+        val tempFile = File(settingsFile.parentFile, "${settingsFile.name}.tmp")
+        tempFile.writeText(settings.toJson().toString())
+        if (!tempFile.renameTo(settingsFile)) {
+            settingsFile.writeText(settings.toJson().toString())
+            tempFile.delete()
+        }
+    }
+
+    private fun readPreferences(): DrillSettings {
         return DrillSettings(
             timeLimitSeconds = preferences
                 .getInt(KeyTimeLimitSeconds, DefaultDrillSettings.timeLimitSeconds)
                 .coerceIn(MinTimeLimitSeconds, MaxTimeLimitSeconds),
             questionCount = preferences
-                .getInt(KeyQuestionCount, TotalQuestionCount)
+                .getInt(KeyQuestionCount, DefaultDrillSettings.questionCount)
                 .coerceIn(MinQuestionCount, MaxQuestionCount),
             leftNumberRange = preferences.getEnum(KeyLeftNumberRange, NumberRange.OneDigit),
             rightNumberRange = preferences.getEnum(KeyRightNumberRange, NumberRange.OneDigit),
             selectedOperation = preferences.getEnum(KeySelectedOperation, Operation.Add),
+            enabledOperations = preferences.getString(KeyEnabledOperations, null).toEnabledOperations(),
+            operationSolvedCounts = Operation.values().associateWith { operation ->
+                preferences.getInt(operationSolvedCountKey(operation), 0).coerceAtLeast(0)
+            },
+            parentPasswordSalt = preferences.getString(KeyParentPasswordSalt, null).orEmpty(),
+            parentPasswordHash = preferences.getString(KeyParentPasswordHash, null).orEmpty(),
+            youtubeMinutesPer100Correct = preferences
+                .getInt(KeyYoutubeMinutesPer100Correct, DefaultYoutubeMinutesPer100Correct)
+                .coerceIn(0, 120),
+            youtubeRewardCorrectCount = preferences.getInt(KeyYoutubeRewardCorrectCount, 0).coerceAtLeast(0),
+            youtubeRewardUsedSeconds = preferences.getInt(KeyYoutubeRewardUsedSeconds, 0).coerceAtLeast(0),
+            isYoutubeRewardUnlimited = preferences.getBoolean(
+                KeyYoutubeRewardUnlimited,
+                DefaultYoutubeRewardUnlimited,
+            ),
+            isInAppYoutubeEnabled = preferences.getBoolean(KeyInAppYoutubeEnabled, DefaultInAppYoutubeEnabled),
+            youtubeWifiSsid = preferences.getString(KeyYoutubeWifiSsid, null).orEmpty(),
+            youtubeWifiPassword = preferences.getString(KeyYoutubeWifiPassword, null).orEmpty(),
         )
     }
 
-    fun save(settings: DrillSettings) {
-        preferences.edit()
-            .putInt(KeyTimeLimitSeconds, settings.timeLimitSeconds)
-            .putInt(KeyQuestionCount, settings.questionCount)
-            .putString(KeyLeftNumberRange, settings.leftNumberRange.name)
-            .putString(KeyRightNumberRange, settings.rightNumberRange.name)
-            .putString(KeySelectedOperation, settings.selectedOperation.name)
-            .apply()
+    private fun JSONObject.toDrillSettings(): DrillSettings {
+        val countsJson = optJSONObject(KeyOperationSolvedCounts)
+        return DrillSettings(
+            timeLimitSeconds = optInt(
+                KeyTimeLimitSeconds,
+                DefaultDrillSettings.timeLimitSeconds,
+            ).coerceIn(MinTimeLimitSeconds, MaxTimeLimitSeconds),
+            questionCount = optInt(
+                KeyQuestionCount,
+                DefaultDrillSettings.questionCount,
+            ).coerceIn(MinQuestionCount, MaxQuestionCount),
+            leftNumberRange = enumValueOrDefault(optString(KeyLeftNumberRange), NumberRange.OneDigit),
+            rightNumberRange = enumValueOrDefault(optString(KeyRightNumberRange), NumberRange.OneDigit),
+            selectedOperation = enumValueOrDefault(optString(KeySelectedOperation), Operation.Add),
+            enabledOperations = if (has(KeyEnabledOperations)) {
+                optString(KeyEnabledOperations).toEnabledOperations()
+            } else {
+                DefaultEnabledOperations
+            },
+            operationSolvedCounts = Operation.values().associateWith { operation ->
+                countsJson?.optInt(operation.name, 0)?.coerceAtLeast(0) ?: 0
+            },
+            parentPasswordSalt = optString(KeyParentPasswordSalt, ""),
+            parentPasswordHash = optString(KeyParentPasswordHash, ""),
+            youtubeMinutesPer100Correct = optInt(
+                KeyYoutubeMinutesPer100Correct,
+                DefaultYoutubeMinutesPer100Correct,
+            ).coerceIn(0, 120),
+            youtubeRewardCorrectCount = optInt(KeyYoutubeRewardCorrectCount, 0).coerceAtLeast(0),
+            youtubeRewardUsedSeconds = optInt(KeyYoutubeRewardUsedSeconds, 0).coerceAtLeast(0),
+            isYoutubeRewardUnlimited = optBoolean(
+                KeyYoutubeRewardUnlimited,
+                DefaultYoutubeRewardUnlimited,
+            ),
+            isInAppYoutubeEnabled = optBoolean(KeyInAppYoutubeEnabled, DefaultInAppYoutubeEnabled),
+            youtubeWifiSsid = optString(KeyYoutubeWifiSsid, ""),
+            youtubeWifiPassword = optString(KeyYoutubeWifiPassword, ""),
+        )
+    }
+
+    private fun DrillSettings.toJson(): JSONObject {
+        val countsJson = JSONObject()
+        Operation.values().forEach { operation ->
+            countsJson.put(operation.name, operationSolvedCounts[operation]?.coerceAtLeast(0) ?: 0)
+        }
+        return JSONObject()
+            .put(KeyTimeLimitSeconds, timeLimitSeconds.coerceIn(MinTimeLimitSeconds, MaxTimeLimitSeconds))
+            .put(KeyQuestionCount, questionCount.coerceIn(MinQuestionCount, MaxQuestionCount))
+            .put(KeyLeftNumberRange, leftNumberRange.name)
+            .put(KeyRightNumberRange, rightNumberRange.name)
+            .put(KeySelectedOperation, selectedOperation.name)
+            .put(KeyEnabledOperations, enabledOperations.sanitizedEnabledOperations().toPersistedString())
+            .put(KeyOperationSolvedCounts, countsJson)
+            .put(KeyParentPasswordSalt, parentPasswordSalt)
+            .put(KeyParentPasswordHash, parentPasswordHash)
+            .put(KeyYoutubeMinutesPer100Correct, youtubeMinutesPer100Correct.coerceIn(0, 120))
+            .put(KeyYoutubeRewardCorrectCount, youtubeRewardCorrectCount.coerceAtLeast(0))
+            .put(KeyYoutubeRewardUsedSeconds, youtubeRewardUsedSeconds.coerceAtLeast(0))
+            .put(KeyYoutubeRewardUnlimited, isYoutubeRewardUnlimited)
+            .put(KeyInAppYoutubeEnabled, isInAppYoutubeEnabled)
+            .put(KeyYoutubeWifiSsid, youtubeWifiSsid)
+            .put(KeyYoutubeWifiPassword, youtubeWifiPassword)
     }
 
     private inline fun <reified T : Enum<T>> SharedPreferences.getEnum(
@@ -193,12 +404,30 @@ private class DrillSettingsStore(context: Context) {
         return runCatching { enumValueOf<T>(name) }.getOrDefault(defaultValue)
     }
 
+    private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String?, defaultValue: T): T {
+        return runCatching { enumValueOf<T>(name.orEmpty()) }.getOrDefault(defaultValue)
+    }
+
     private companion object {
+        const val SettingsFileName = "drill_settings.json"
         const val KeyTimeLimitSeconds = "time_limit_seconds"
         const val KeyQuestionCount = "question_count"
         const val KeyLeftNumberRange = "left_number_range"
         const val KeyRightNumberRange = "right_number_range"
         const val KeySelectedOperation = "selected_operation"
+        const val KeyEnabledOperations = "enabled_operations"
+        const val KeyOperationSolvedCounts = "operation_solved_counts"
+        const val KeyParentPasswordSalt = "parent_password_salt"
+        const val KeyParentPasswordHash = "parent_password_hash"
+        const val KeyYoutubeMinutesPer100Correct = "youtube_minutes_per_100_correct"
+        const val KeyYoutubeRewardCorrectCount = "youtube_reward_correct_count"
+        const val KeyYoutubeRewardUsedSeconds = "youtube_reward_used_seconds"
+        const val KeyYoutubeRewardUnlimited = "youtube_reward_unlimited"
+        const val KeyInAppYoutubeEnabled = "in_app_youtube_enabled"
+        const val KeyYoutubeWifiSsid = "youtube_wifi_ssid"
+        const val KeyYoutubeWifiPassword = "youtube_wifi_password"
+
+        fun operationSolvedCountKey(operation: Operation): String = "operation_solved_count_${operation.name}"
     }
 }
 
@@ -329,6 +558,7 @@ class DrillViewModel private constructor(
     val uiState: StateFlow<DrillUiState> = _uiState.asStateFlow()
 
     private var timerJob: Job? = null
+    private var youtubeRewardTimerJob: Job? = null
 
     fun setTimeLimit(seconds: Int) {
         updateSettings { it.copy(timeLimitSeconds = seconds.coerceIn(MinTimeLimitSeconds, MaxTimeLimitSeconds)) }
@@ -338,25 +568,31 @@ class DrillViewModel private constructor(
         updateSettings { it.copy(questionCount = count.coerceIn(MinQuestionCount, MaxQuestionCount)) }
     }
 
-    fun setLeftNumberRange(numberRange: NumberRange) {
-        updateSettings { state ->
-            state.copy(leftNumberRange = numberRange)
-                .withValidRangesForOperation()
-        }
-    }
-
-    fun setRightNumberRange(numberRange: NumberRange) {
-        updateSettings { state ->
-            state.copy(rightNumberRange = numberRange)
-                .withValidRangesForOperation()
-        }
-    }
-
     fun setOperation(operation: Operation) {
         updateSettings { state ->
-            state.copy(selectedOperation = operation)
+            if (operation !in state.enabledOperations) {
+                state
+            } else {
+                state.copy(selectedOperation = operation)
+                    .withValidRangesForOperation()
+            }
+        }
+    }
+
+    fun setOperationEnabled(operation: Operation) {
+        val current = _uiState.value.enabledOperations.sanitizedEnabledOperations()
+        val nextEnabledOperations = if (operation in current) {
+            if (current.size == 1) current else current - operation
+        } else {
+            current + operation
+        }.sanitizedEnabledOperations()
+
+        settingsStore.saveEnabledOperations(nextEnabledOperations)
+        _uiState.update { state ->
+            state.copy(enabledOperations = nextEnabledOperations)
                 .withValidRangesForOperation()
         }
+        settingsStore.save(_uiState.value.toSettings())
     }
 
     fun startDrill() {
@@ -408,6 +644,7 @@ class DrillViewModel private constructor(
 
     fun returnToSettings() {
         timerJob?.cancel()
+        youtubeRewardTimerJob?.cancel()
         _uiState.update {
             it.copy(
                 screen = DrillScreenState.Settings,
@@ -421,7 +658,100 @@ class DrillViewModel private constructor(
                 selectedHistory = null,
                 isRetryMode = false,
                 remainingMillis = 0L,
+                isAdminAuthenticated = false,
             )
+        }
+    }
+
+    fun showAdmin() {
+        timerJob?.cancel()
+        youtubeRewardTimerJob?.cancel()
+        _uiState.update {
+            it.copy(
+                screen = DrillScreenState.Admin,
+                isAdminAuthenticated = false,
+                adminAuthError = null,
+                parentPasswordMessage = null,
+            )
+        }
+    }
+
+    fun unlockAdmin(password: String) {
+        val settings = settingsStore.load()
+        val authenticated = verifyParentPassword(password, settings)
+        _uiState.update {
+            it.copy(
+                isAdminAuthenticated = authenticated,
+                adminAuthError = if (authenticated) null else "パスワードが違います。",
+                parentPasswordMessage = null,
+            )
+        }
+    }
+
+    fun saveParentPassword(currentPassword: String, newPassword: String): Boolean {
+        val settings = settingsStore.load()
+        if (newPassword.length < MinParentPasswordLength) {
+            _uiState.update {
+                it.copy(parentPasswordMessage = "${MinParentPasswordLength}文字以上で設定してください。")
+            }
+            return false
+        }
+        if (!verifyParentPassword(currentPassword, settings)) {
+            _uiState.update {
+                it.copy(parentPasswordMessage = "現在のパスワードが違います。")
+            }
+            return false
+        }
+
+        val passwordHash = ParentPasswordHash.create(newPassword)
+        settingsStore.saveParentPasswordHash(passwordHash.salt, passwordHash.hash)
+        _uiState.update {
+            it.copy(parentPasswordMessage = "パスワードを保存しました。")
+        }
+        return true
+    }
+
+    fun setYoutubeMinutesPer100Correct(minutes: Int) {
+        settingsStore.saveYoutubeMinutesPer100Correct(minutes.coerceIn(0, 120))
+        refreshSettingsUiState()
+    }
+
+    fun setInAppYoutubeEnabled(enabled: Boolean) {
+        settingsStore.saveInAppYoutubeEnabled(enabled)
+        if (!enabled && _uiState.value.screen == DrillScreenState.YoutubeReward) {
+            hideYoutubeReward()
+            return
+        }
+        refreshSettingsUiState()
+    }
+
+    fun saveYoutubeWifiSettings(ssid: String, password: String) {
+        settingsStore.saveYoutubeWifiSettings(ssid, password)
+        refreshSettingsUiState()
+    }
+
+    fun startYoutubeRewardSession() {
+        val state = _uiState.value
+        if (!state.isInAppYoutubeEnabled) return
+        if (!state.isYoutubeRewardUnlimited && state.youtubeRewardAvailableSeconds <= 0) return
+        timerJob?.cancel()
+        _uiState.update { it.copy(screen = DrillScreenState.YoutubeReward) }
+    }
+
+    fun hideYoutubeReward() {
+        youtubeRewardTimerJob?.cancel()
+        youtubeRewardTimerJob = null
+        _uiState.update { it.copy(screen = DrillScreenState.Settings) }
+    }
+
+    fun setYoutubeRewardTimerRunning(running: Boolean) {
+        if (_uiState.value.screen != DrillScreenState.YoutubeReward) return
+        if (running) {
+            if (youtubeRewardTimerJob?.isActive == true) return
+            startYoutubeRewardTimer()
+        } else {
+            youtubeRewardTimerJob?.cancel()
+            youtubeRewardTimerJob = null
         }
     }
 
@@ -462,6 +792,49 @@ class DrillViewModel private constructor(
                 selectedHistory = it.selectedHistory?.takeIf { selectedHistory ->
                     selectedHistory.id != history.id
                 },
+            )
+        }
+    }
+
+    private fun startYoutubeRewardTimer() {
+        youtubeRewardTimerJob?.cancel()
+        youtubeRewardTimerJob = viewModelScope.launch {
+            while (_uiState.value.screen == DrillScreenState.YoutubeReward) {
+                delay(1_000)
+                val settings = settingsStore.load()
+                if (settings.isYoutubeRewardUnlimited) {
+                    refreshSettingsUiState(screen = DrillScreenState.YoutubeReward)
+                    continue
+                }
+                val availableSeconds = settings.youtubeRewardAvailableSeconds()
+                if (availableSeconds <= 1) {
+                    settingsStore.saveYoutubeRewardUsedSeconds(
+                        settings.youtubeRewardUsedSeconds + availableSeconds.coerceAtLeast(0),
+                    )
+                    refreshSettingsUiState(screen = DrillScreenState.Settings)
+                    break
+                }
+
+                settingsStore.saveYoutubeRewardUsedSeconds(settings.youtubeRewardUsedSeconds + 1)
+                refreshSettingsUiState(screen = DrillScreenState.YoutubeReward)
+            }
+        }
+    }
+
+    private fun refreshSettingsUiState(screen: DrillScreenState = _uiState.value.screen) {
+        val settings = settingsStore.load()
+        _uiState.update {
+            it.copy(
+                screen = screen,
+                enabledOperations = settings.enabledOperations,
+                operationProgress = settings.operationProgress(),
+                youtubeMinutesPer100Correct = settings.youtubeMinutesPer100Correct,
+                youtubeRewardTotalScore = settings.youtubeRewardCorrectCount,
+                youtubeRewardAvailableSeconds = settings.youtubeRewardAvailableSeconds(),
+                isYoutubeRewardUnlimited = settings.isYoutubeRewardUnlimited,
+                isInAppYoutubeEnabled = settings.isInAppYoutubeEnabled,
+                youtubeWifiSsid = settings.youtubeWifiSsid,
+                youtubeWifiPassword = settings.youtubeWifiPassword,
             )
         }
     }
@@ -535,6 +908,10 @@ class DrillViewModel private constructor(
             if (retryableIncorrectReviews.isEmpty()) {
                 val completedAtMillis = System.currentTimeMillis()
                 val finalCorrectCount = allReviews.count { review -> review.isCorrect }
+                val solvedCount = allReviews.size.takeIf { count -> count > 0 } ?: it.questionCount
+                settingsStore.addOperationSolvedCount(it.selectedOperation, solvedCount)
+                settingsStore.addYoutubeRewardCorrectCount(finalCorrectCount)
+                val latestSettings = settingsStore.load()
                 val savedHistory = DrillHistory(
                     id = completedAtMillis,
                     completedAtMillis = completedAtMillis,
@@ -558,6 +935,9 @@ class DrillViewModel private constructor(
                     history = nextHistory,
                     isRetryMode = false,
                     remainingMillis = 0L,
+                    operationProgress = latestSettings.operationProgress(),
+                    youtubeRewardTotalScore = latestSettings.youtubeRewardCorrectCount,
+                    youtubeRewardAvailableSeconds = latestSettings.youtubeRewardAvailableSeconds(),
                 )
             } else {
                 it.copy(
@@ -677,21 +1057,13 @@ class DrillViewModel private constructor(
         val minimum = when (operation) {
             Operation.Add,
             Operation.Subtract,
-                -> 3
+                -> 10
 
-            Operation.Multiply -> 3
+            Operation.Multiply -> 1
             Operation.Divide -> 2
         }
-        val left = if (operation == Operation.Divide) {
-            randomDividend(leftNumberRange, rightNumberRange)
-        } else {
-            randomNumber(leftNumberRange, minimum = minimum)
-        }
-        val right = if (operation == Operation.Divide) {
-            randomDivisor(left, rightNumberRange)
-        } else {
-            randomNumber(rightNumberRange, minimum = minimum)
-        }
+        val left = randomNumber(leftNumberRange, minimum = minimum)
+        val right = randomNumber(rightNumberRange, minimum = minimum)
         val nonNegativeLeft = maxOf(left, right)
         val nonNegativeRight = minOf(left, right)
 
@@ -703,9 +1075,8 @@ class DrillViewModel private constructor(
     }
 
     private fun generateMultiplicationTableDivisionProblem(): MathProblem {
-        val divisor = Random.nextInt(2, 10)
-        val quotients = (2..9).filter { quotient -> divisor * quotient >= 10 }
-        val quotient = quotients.random()
+        val divisor = Random.nextInt(1, 10)
+        val quotient = Random.nextInt(1, 10)
         return MathProblem(
             left = divisor * quotient,
             right = divisor,
@@ -719,28 +1090,6 @@ class DrillViewModel private constructor(
             NumberRange.IncludeTwoDigits -> 99
         }
         return Random.nextInt(minimum.coerceAtMost(max), max + 1)
-    }
-
-    private fun randomDividend(leftNumberRange: NumberRange, rightNumberRange: NumberRange): Int {
-        val leftMax = maxNumber(leftNumberRange)
-        val rightMax = maxNumber(rightNumberRange)
-        val candidates = (2..leftMax).filter { dividend ->
-            (2..minOf(dividend, rightMax)).any { divisor -> dividend % divisor == 0 }
-        }
-        return candidates.random()
-    }
-
-    private fun randomDivisor(dividend: Int, numberRange: NumberRange): Int {
-        val max = maxNumber(numberRange)
-        val candidates = (2..minOf(dividend, max)).filter { divisor -> dividend % divisor == 0 }
-        return candidates.random()
-    }
-
-    private fun maxNumber(numberRange: NumberRange): Int {
-        return when (numberRange) {
-            NumberRange.OneDigit -> 9
-            NumberRange.IncludeTwoDigits -> 99
-        }
     }
 
     private fun generateIntegerChoices(
@@ -757,9 +1106,11 @@ class DrillViewModel private constructor(
             }
         }
 
+        val fallbackStep = if (shouldKeepChoiceOnesDigitFixed(problem)) 10 else 1
         var distance = 1
         while (values.size < ChoiceCount) {
-            listOf(correctAnswer - distance, correctAnswer + distance).shuffled().forEach { candidate ->
+            val offset = distance * fallbackStep
+            listOf(correctAnswer - offset, correctAnswer + offset).shuffled().forEach { candidate ->
                 if (values.size < ChoiceCount && isValidChoiceValue(candidate, problem)) {
                     values += candidate
                 }
@@ -793,10 +1144,15 @@ class DrillViewModel private constructor(
 
     private fun plausibleIntegerDistractors(problem: MathProblem): List<Int> {
         val nearbyOffsets = listOf(-3, -2, -1, 1, 2, 3)
+        val sameOnesDigitOffsets = listOf(-30, -20, -10, 10, 20, 30)
         return when (problem.operation) {
-            Operation.Add -> nearbyOffsets.map { problem.left + problem.right + it } +
-                nearbyOffsets.flatMap { offset ->
-                    listOf(problem.left + (problem.right + offset), (problem.left + offset) + problem.right)
+            Operation.Add -> if (shouldKeepChoiceOnesDigitFixed(problem)) {
+                sameOnesDigitOffsets.map { problem.answer + it }
+            } else {
+                nearbyOffsets.map { problem.left + problem.right + it } +
+                    nearbyOffsets.flatMap { offset ->
+                        listOf(problem.left + (problem.right + offset), (problem.left + offset) + problem.right)
+                    }
                 }
 
             Operation.Subtract -> nearbyOffsets.map { problem.left - problem.right + it } +
@@ -817,6 +1173,7 @@ class DrillViewModel private constructor(
 
     private fun isValidChoiceValue(value: Int, problem: MathProblem): Boolean {
         if (value == problem.answer) return false
+        if (shouldKeepChoiceOnesDigitFixed(problem) && value % 10 != problem.answer % 10) return false
         return when (problem.operation) {
             Operation.Multiply,
             Operation.Divide,
@@ -828,6 +1185,10 @@ class DrillViewModel private constructor(
         }
     }
 
+    private fun shouldKeepChoiceOnesDigitFixed(problem: MathProblem): Boolean {
+        return problem.operation == Operation.Add && problem.left >= 10 && problem.right >= 10
+    }
+
     private fun updateSettings(reducer: (DrillUiState) -> DrillUiState) {
         val nextState = reducer(_uiState.value)
         _uiState.value = nextState
@@ -836,6 +1197,7 @@ class DrillViewModel private constructor(
 
     override fun onCleared() {
         timerJob?.cancel()
+        youtubeRewardTimerJob?.cancel()
         super.onCleared()
     }
 
@@ -862,25 +1224,44 @@ private fun DrillSettings.toUiState(history: List<DrillHistory>): DrillUiState {
         leftNumberRange = leftNumberRange,
         rightNumberRange = rightNumberRange,
         selectedOperation = selectedOperation,
+        enabledOperations = enabledOperations,
+        operationProgress = operationProgress(),
         history = history,
+        youtubeMinutesPer100Correct = youtubeMinutesPer100Correct,
+        youtubeRewardTotalScore = youtubeRewardCorrectCount,
+        youtubeRewardAvailableSeconds = youtubeRewardAvailableSeconds(),
+        isYoutubeRewardUnlimited = isYoutubeRewardUnlimited,
+        isInAppYoutubeEnabled = isInAppYoutubeEnabled,
+        youtubeWifiSsid = youtubeWifiSsid,
+        youtubeWifiPassword = youtubeWifiPassword,
     ).withValidRangesForOperation()
 }
 
 private fun DrillUiState.withValidRangesForOperation(): DrillUiState {
-    return when (selectedOperation) {
-        Operation.Multiply -> copy(
+    val safeEnabledOperations = enabledOperations.sanitizedEnabledOperations()
+    val safeOperation = selectedOperation.takeIf { it in safeEnabledOperations }
+        ?: safeEnabledOperations.first()
+    val state = copy(
+        selectedOperation = safeOperation,
+        enabledOperations = safeEnabledOperations,
+    )
+    return when (safeOperation) {
+        Operation.Multiply -> state.copy(
             leftNumberRange = NumberRange.OneDigit,
             rightNumberRange = NumberRange.OneDigit,
         )
 
-        Operation.Divide -> copy(
+        Operation.Divide -> state.copy(
             leftNumberRange = NumberRange.IncludeTwoDigits,
             rightNumberRange = NumberRange.OneDigit,
         )
 
         Operation.Add,
         Operation.Subtract,
-            -> this
+            -> state.copy(
+                leftNumberRange = NumberRange.IncludeTwoDigits,
+                rightNumberRange = NumberRange.IncludeTwoDigits,
+            )
     }
 }
 
@@ -891,8 +1272,80 @@ private fun DrillUiState.toSettings(): DrillSettings {
         leftNumberRange = leftNumberRange,
         rightNumberRange = rightNumberRange,
         selectedOperation = selectedOperation,
+        enabledOperations = enabledOperations,
+        youtubeMinutesPer100Correct = youtubeMinutesPer100Correct,
+        isYoutubeRewardUnlimited = isYoutubeRewardUnlimited,
+        isInAppYoutubeEnabled = isInAppYoutubeEnabled,
+        youtubeWifiSsid = youtubeWifiSsid,
+        youtubeWifiPassword = youtubeWifiPassword,
     )
 }
+
+private fun DrillSettings.youtubeRewardAvailableSeconds(): Int {
+    val earnedSeconds = youtubeRewardCorrectCount * youtubeMinutesPer100Correct * 60 / 100
+    return (earnedSeconds - youtubeRewardUsedSeconds).coerceAtLeast(0)
+}
+
+private fun DrillSettings.operationProgress(): List<OperationProgress> {
+    val totalSolvedCount = operationSolvedCounts.values.sum().coerceAtLeast(0)
+    return Operation.values().map { operation ->
+        val solvedCount = operationSolvedCounts[operation] ?: 0
+        OperationProgress(
+            operation = operation,
+            solvedCount = solvedCount,
+            percentage = if (totalSolvedCount == 0) 0 else solvedCount * 100 / totalSolvedCount,
+        )
+    }
+}
+
+private fun String?.toEnabledOperations(): Set<Operation> {
+    if (isNullOrBlank()) return DefaultEnabledOperations
+    return split(",")
+        .mapNotNull { name -> runCatching { enumValueOf<Operation>(name) }.getOrNull() }
+        .toSet()
+        .sanitizedEnabledOperations()
+}
+
+private fun Set<Operation>.sanitizedEnabledOperations(): Set<Operation> {
+    val ordered = Operation.values().filter { operation -> operation in this }.toSet()
+    return if (ordered.isEmpty()) DefaultEnabledOperations else ordered
+}
+
+private fun Set<Operation>.toPersistedString(): String =
+    sanitizedEnabledOperations().joinToString(",") { operation -> operation.name }
+
+private data class ParentPasswordHash(
+    val salt: String,
+    val hash: String,
+) {
+    companion object {
+        fun create(password: String): ParentPasswordHash {
+            val saltBytes = ByteArray(16)
+            SecureRandom().nextBytes(saltBytes)
+            val salt = saltBytes.toBase64()
+            return ParentPasswordHash(
+                salt = salt,
+                hash = hashParentPassword(password, salt),
+            )
+        }
+    }
+}
+
+private fun verifyParentPassword(password: String, settings: DrillSettings): Boolean {
+    if (settings.parentPasswordSalt.isBlank() || settings.parentPasswordHash.isBlank()) {
+        return password == DefaultParentPassword
+    }
+    return hashParentPassword(password, settings.parentPasswordSalt) == settings.parentPasswordHash
+}
+
+private fun hashParentPassword(password: String, salt: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val bytes = digest.digest("$salt:$password".toByteArray(Charsets.UTF_8))
+    return bytes.toBase64()
+}
+
+private fun ByteArray.toBase64(): String =
+    Base64.encodeToString(this, Base64.NO_WRAP)
 
 private data class GeneratedQuestion(
     val problem: MathProblem,
