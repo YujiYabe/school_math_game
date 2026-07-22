@@ -558,19 +558,6 @@ private fun YoutubeRewardScreen(
                 textAlign = TextAlign.End,
             )
         }
-        if (wifiStatus.isNotBlank()) {
-            Text(
-                text = wifiStatus,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFFFF7ED))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                color = Color(0xFF9A3412),
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
         youtubeLoadError?.let { message ->
             Text(
                 text = message,
