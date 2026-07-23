@@ -852,7 +852,6 @@ class DrillViewModel private constructor(
 
     fun startYoutubeRewardSession() {
         val state = _uiState.value
-        if (!state.isInAppYoutubeEnabled) return
         if (!state.isYoutubeRewardUnlimited && state.youtubeRewardAvailableSeconds <= 0) return
         timerJob?.cancel()
         _uiState.update { it.copy(screen = DrillScreenState.YoutubeReward) }

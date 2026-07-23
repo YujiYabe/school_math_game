@@ -15,4 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "SchoolMathGame"
+includeBuild("../android_admin_common")
 include(":app")
