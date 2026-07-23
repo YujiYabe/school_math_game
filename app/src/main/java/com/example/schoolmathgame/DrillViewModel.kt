@@ -35,6 +35,7 @@ private const val MaxQuestionCount = 100
 private const val MaxHistoryCount = 50
 private const val MaxRetryCount = 2
 private const val DefaultYoutubeMinutesPer100Correct = 30
+private const val MaxYoutubeRewardAvailableSeconds = 120 * 60
 private const val DefaultYoutubeRewardUnlimited = false
 private const val DefaultInAppYoutubeEnabled = true
 private const val MinParentPasswordLength = 4
@@ -132,6 +133,11 @@ data class OperationProgress(
     val percentage: Int,
 )
 
+data class SavedWifiNetwork(
+    val ssid: String,
+    val password: String,
+)
+
 data class DrillUiState(
     val screen: DrillScreenState = DrillScreenState.Settings,
     val timeLimitSeconds: Int = DefaultTimeLimitSeconds,
@@ -158,10 +164,13 @@ data class DrillUiState(
     val youtubeMinutesPer100Correct: Int = DefaultYoutubeMinutesPer100Correct,
     val youtubeRewardTotalScore: Int = 0,
     val youtubeRewardAvailableSeconds: Int = 0,
+    val youtubeRewardUsedSeconds: Int = 0,
+    val youtubeRewardAdjustmentSeconds: Int = 0,
     val isYoutubeRewardUnlimited: Boolean = DefaultYoutubeRewardUnlimited,
     val isInAppYoutubeEnabled: Boolean = DefaultInAppYoutubeEnabled,
     val youtubeWifiSsid: String = "",
     val youtubeWifiPassword: String = "",
+    val savedYoutubeWifiNetworks: List<SavedWifiNetwork> = emptyList(),
 ) {
     val activeQuestionCount: Int
         get() = if (isRetryMode) retryProblems.size else questionCount
@@ -189,10 +198,12 @@ private data class DrillSettings(
     val youtubeMinutesPer100Correct: Int = DefaultYoutubeMinutesPer100Correct,
     val youtubeRewardCorrectCount: Int = 0,
     val youtubeRewardUsedSeconds: Int = 0,
+    val youtubeRewardAdjustmentSeconds: Int = 0,
     val isYoutubeRewardUnlimited: Boolean = DefaultYoutubeRewardUnlimited,
     val isInAppYoutubeEnabled: Boolean = DefaultInAppYoutubeEnabled,
     val youtubeWifiSsid: String = "",
     val youtubeWifiPassword: String = "",
+    val savedYoutubeWifiNetworks: List<SavedWifiNetwork> = emptyList(),
 )
 
 private val DefaultDrillSettings = DrillSettings()
@@ -271,11 +282,56 @@ private class DrillSettingsStore(context: Context) {
         writeSettingsFile(load().copy(youtubeRewardUsedSeconds = seconds.coerceAtLeast(0)))
     }
 
-    fun saveYoutubeWifiSettings(ssid: String, password: String) {
+    fun saveYoutubeRewardAvailableSeconds(seconds: Int) {
+        val current = load()
+        val adjustedSeconds = seconds.coerceIn(0, MaxYoutubeRewardAvailableSeconds)
         writeSettingsFile(
-            load().copy(
-                youtubeWifiSsid = ssid.trim(),
+            current.copy(
+                youtubeRewardAdjustmentSeconds = adjustedSeconds - current.youtubeRewardRawAvailableSeconds(),
+                isYoutubeRewardUnlimited = false,
+            ),
+        )
+    }
+
+    fun saveYoutubeWifiSettings(ssid: String, password: String) {
+        val trimmedSsid = ssid.trim()
+        val current = load()
+        val savedNetworks = if (trimmedSsid.isBlank()) {
+            current.savedYoutubeWifiNetworks
+        } else {
+            (listOf(SavedWifiNetwork(trimmedSsid, password)) +
+                current.savedYoutubeWifiNetworks.filterNot { network -> network.ssid == trimmedSsid })
+        }
+        writeSettingsFile(
+            current.copy(
+                youtubeWifiSsid = trimmedSsid,
                 youtubeWifiPassword = password,
+                savedYoutubeWifiNetworks = savedNetworks,
+            ),
+        )
+    }
+
+    fun selectYoutubeWifiSettings(ssid: String) {
+        val current = load()
+        val network = current.savedYoutubeWifiNetworks.firstOrNull { it.ssid == ssid.trim() } ?: return
+        writeSettingsFile(
+            current.copy(
+                youtubeWifiSsid = network.ssid,
+                youtubeWifiPassword = network.password,
+            ),
+        )
+    }
+
+    fun deleteYoutubeWifiSettings(ssid: String) {
+        val trimmedSsid = ssid.trim()
+        val current = load()
+        val savedNetworks = current.savedYoutubeWifiNetworks.filterNot { network -> network.ssid == trimmedSsid }
+        val activeWasDeleted = current.youtubeWifiSsid == trimmedSsid
+        writeSettingsFile(
+            current.copy(
+                youtubeWifiSsid = if (activeWasDeleted) "" else current.youtubeWifiSsid,
+                youtubeWifiPassword = if (activeWasDeleted) "" else current.youtubeWifiPassword,
+                savedYoutubeWifiNetworks = savedNetworks,
             ),
         )
     }
@@ -322,14 +378,32 @@ private class DrillSettingsStore(context: Context) {
                 .coerceIn(0, 120),
             youtubeRewardCorrectCount = preferences.getInt(KeyYoutubeRewardCorrectCount, 0).coerceAtLeast(0),
             youtubeRewardUsedSeconds = preferences.getInt(KeyYoutubeRewardUsedSeconds, 0).coerceAtLeast(0),
+            youtubeRewardAdjustmentSeconds = preferences.getInt(KeyYoutubeRewardAdjustmentSeconds, 0),
             isYoutubeRewardUnlimited = preferences.getBoolean(
                 KeyYoutubeRewardUnlimited,
                 DefaultYoutubeRewardUnlimited,
             ),
             isInAppYoutubeEnabled = preferences.getBoolean(KeyInAppYoutubeEnabled, DefaultInAppYoutubeEnabled),
-            youtubeWifiSsid = preferences.getString(KeyYoutubeWifiSsid, null).orEmpty(),
+            youtubeWifiSsid = preferences.getString(KeyYoutubeWifiSsid, null).orEmpty().trim(),
             youtubeWifiPassword = preferences.getString(KeyYoutubeWifiPassword, null).orEmpty(),
+        ).withMigratedWifiNetworks()
+    }
+
+    private fun DrillSettings.withMigratedWifiNetworks(): DrillSettings {
+        if (youtubeWifiSsid.isBlank()) return copy(savedYoutubeWifiNetworks = savedYoutubeWifiNetworks.sanitizedWifiNetworks())
+        val savedNetworks = (
+            listOf(SavedWifiNetwork(youtubeWifiSsid.trim(), youtubeWifiPassword)) + savedYoutubeWifiNetworks
+            ).sanitizedWifiNetworks()
+        return copy(
+            youtubeWifiSsid = youtubeWifiSsid.trim(),
+            savedYoutubeWifiNetworks = savedNetworks,
         )
+    }
+
+    private fun List<SavedWifiNetwork>.sanitizedWifiNetworks(): List<SavedWifiNetwork> {
+        return map { network -> network.copy(ssid = network.ssid.trim()) }
+            .filter { network -> network.ssid.isNotBlank() }
+            .distinctBy { network -> network.ssid }
     }
 
     private fun JSONObject.toDrillSettings(): DrillSettings {
@@ -362,14 +436,16 @@ private class DrillSettingsStore(context: Context) {
             ).coerceIn(0, 120),
             youtubeRewardCorrectCount = optInt(KeyYoutubeRewardCorrectCount, 0).coerceAtLeast(0),
             youtubeRewardUsedSeconds = optInt(KeyYoutubeRewardUsedSeconds, 0).coerceAtLeast(0),
+            youtubeRewardAdjustmentSeconds = optInt(KeyYoutubeRewardAdjustmentSeconds, 0),
             isYoutubeRewardUnlimited = optBoolean(
                 KeyYoutubeRewardUnlimited,
                 DefaultYoutubeRewardUnlimited,
             ),
             isInAppYoutubeEnabled = optBoolean(KeyInAppYoutubeEnabled, DefaultInAppYoutubeEnabled),
-            youtubeWifiSsid = optString(KeyYoutubeWifiSsid, ""),
+            youtubeWifiSsid = optString(KeyYoutubeWifiSsid, "").trim(),
             youtubeWifiPassword = optString(KeyYoutubeWifiPassword, ""),
-        )
+            savedYoutubeWifiNetworks = optJSONArray(KeyYoutubeWifiNetworks).toSavedWifiNetworks(),
+        ).withMigratedWifiNetworks()
     }
 
     private fun DrillSettings.toJson(): JSONObject {
@@ -390,10 +466,35 @@ private class DrillSettingsStore(context: Context) {
             .put(KeyYoutubeMinutesPer100Correct, youtubeMinutesPer100Correct.coerceIn(0, 120))
             .put(KeyYoutubeRewardCorrectCount, youtubeRewardCorrectCount.coerceAtLeast(0))
             .put(KeyYoutubeRewardUsedSeconds, youtubeRewardUsedSeconds.coerceAtLeast(0))
+            .put(KeyYoutubeRewardAdjustmentSeconds, youtubeRewardAdjustmentSeconds)
             .put(KeyYoutubeRewardUnlimited, isYoutubeRewardUnlimited)
             .put(KeyInAppYoutubeEnabled, isInAppYoutubeEnabled)
             .put(KeyYoutubeWifiSsid, youtubeWifiSsid)
             .put(KeyYoutubeWifiPassword, youtubeWifiPassword)
+            .put(KeyYoutubeWifiNetworks, savedYoutubeWifiNetworks.sanitizedWifiNetworks().toJsonArray())
+    }
+
+    private fun JSONArray?.toSavedWifiNetworks(): List<SavedWifiNetwork> {
+        if (this == null) return emptyList()
+        return List(length()) { index ->
+            val item = optJSONObject(index)
+            SavedWifiNetwork(
+                ssid = item?.optString(KeyWifiNetworkSsid, "").orEmpty(),
+                password = item?.optString(KeyWifiNetworkPassword, "").orEmpty(),
+            )
+        }.sanitizedWifiNetworks()
+    }
+
+    private fun List<SavedWifiNetwork>.toJsonArray(): JSONArray {
+        val array = JSONArray()
+        forEach { network ->
+            array.put(
+                JSONObject()
+                    .put(KeyWifiNetworkSsid, network.ssid)
+                    .put(KeyWifiNetworkPassword, network.password),
+            )
+        }
+        return array
     }
 
     private inline fun <reified T : Enum<T>> SharedPreferences.getEnum(
@@ -422,10 +523,14 @@ private class DrillSettingsStore(context: Context) {
         const val KeyYoutubeMinutesPer100Correct = "youtube_minutes_per_100_correct"
         const val KeyYoutubeRewardCorrectCount = "youtube_reward_correct_count"
         const val KeyYoutubeRewardUsedSeconds = "youtube_reward_used_seconds"
+        const val KeyYoutubeRewardAdjustmentSeconds = "youtube_reward_adjustment_seconds"
         const val KeyYoutubeRewardUnlimited = "youtube_reward_unlimited"
         const val KeyInAppYoutubeEnabled = "in_app_youtube_enabled"
         const val KeyYoutubeWifiSsid = "youtube_wifi_ssid"
         const val KeyYoutubeWifiPassword = "youtube_wifi_password"
+        const val KeyYoutubeWifiNetworks = "youtube_wifi_networks"
+        const val KeyWifiNetworkSsid = "ssid"
+        const val KeyWifiNetworkPassword = "password"
 
         fun operationSolvedCountKey(operation: Operation): String = "operation_solved_count_${operation.name}"
     }
@@ -716,6 +821,11 @@ class DrillViewModel private constructor(
         refreshSettingsUiState()
     }
 
+    fun setYoutubeRewardAvailableSeconds(seconds: Int) {
+        settingsStore.saveYoutubeRewardAvailableSeconds(seconds)
+        refreshSettingsUiState()
+    }
+
     fun setInAppYoutubeEnabled(enabled: Boolean) {
         settingsStore.saveInAppYoutubeEnabled(enabled)
         if (!enabled && _uiState.value.screen == DrillScreenState.YoutubeReward) {
@@ -727,6 +837,16 @@ class DrillViewModel private constructor(
 
     fun saveYoutubeWifiSettings(ssid: String, password: String) {
         settingsStore.saveYoutubeWifiSettings(ssid, password)
+        refreshSettingsUiState()
+    }
+
+    fun selectYoutubeWifiSettings(ssid: String) {
+        settingsStore.selectYoutubeWifiSettings(ssid)
+        refreshSettingsUiState()
+    }
+
+    fun deleteYoutubeWifiSettings(ssid: String) {
+        settingsStore.deleteYoutubeWifiSettings(ssid)
         refreshSettingsUiState()
     }
 
@@ -831,10 +951,13 @@ class DrillViewModel private constructor(
                 youtubeMinutesPer100Correct = settings.youtubeMinutesPer100Correct,
                 youtubeRewardTotalScore = settings.youtubeRewardCorrectCount,
                 youtubeRewardAvailableSeconds = settings.youtubeRewardAvailableSeconds(),
+                youtubeRewardUsedSeconds = settings.youtubeRewardUsedSeconds,
+                youtubeRewardAdjustmentSeconds = settings.youtubeRewardAdjustmentSeconds,
                 isYoutubeRewardUnlimited = settings.isYoutubeRewardUnlimited,
                 isInAppYoutubeEnabled = settings.isInAppYoutubeEnabled,
                 youtubeWifiSsid = settings.youtubeWifiSsid,
                 youtubeWifiPassword = settings.youtubeWifiPassword,
+                savedYoutubeWifiNetworks = settings.savedYoutubeWifiNetworks,
             )
         }
     }
@@ -1230,10 +1353,13 @@ private fun DrillSettings.toUiState(history: List<DrillHistory>): DrillUiState {
         youtubeMinutesPer100Correct = youtubeMinutesPer100Correct,
         youtubeRewardTotalScore = youtubeRewardCorrectCount,
         youtubeRewardAvailableSeconds = youtubeRewardAvailableSeconds(),
+        youtubeRewardUsedSeconds = youtubeRewardUsedSeconds,
+        youtubeRewardAdjustmentSeconds = youtubeRewardAdjustmentSeconds,
         isYoutubeRewardUnlimited = isYoutubeRewardUnlimited,
         isInAppYoutubeEnabled = isInAppYoutubeEnabled,
         youtubeWifiSsid = youtubeWifiSsid,
         youtubeWifiPassword = youtubeWifiPassword,
+        savedYoutubeWifiNetworks = savedYoutubeWifiNetworks,
     ).withValidRangesForOperation()
 }
 
@@ -1276,14 +1402,25 @@ private fun DrillUiState.toSettings(): DrillSettings {
         youtubeMinutesPer100Correct = youtubeMinutesPer100Correct,
         isYoutubeRewardUnlimited = isYoutubeRewardUnlimited,
         isInAppYoutubeEnabled = isInAppYoutubeEnabled,
+        youtubeRewardCorrectCount = youtubeRewardTotalScore,
+        youtubeRewardUsedSeconds = youtubeRewardUsedSeconds,
+        youtubeRewardAdjustmentSeconds = youtubeRewardAdjustmentSeconds,
         youtubeWifiSsid = youtubeWifiSsid,
         youtubeWifiPassword = youtubeWifiPassword,
+        savedYoutubeWifiNetworks = savedYoutubeWifiNetworks,
     )
 }
 
+private fun DrillSettings.youtubeRewardRawAvailableSeconds(): Int {
+    return youtubeRewardEarnedSeconds() - youtubeRewardUsedSeconds
+}
+
 private fun DrillSettings.youtubeRewardAvailableSeconds(): Int {
-    val earnedSeconds = youtubeRewardCorrectCount * youtubeMinutesPer100Correct * 60 / 100
-    return (earnedSeconds - youtubeRewardUsedSeconds).coerceAtLeast(0)
+    return (youtubeRewardRawAvailableSeconds() + youtubeRewardAdjustmentSeconds).coerceAtLeast(0)
+}
+
+private fun DrillSettings.youtubeRewardEarnedSeconds(): Int {
+    return youtubeRewardCorrectCount * youtubeMinutesPer100Correct * 60 / 100
 }
 
 private fun DrillSettings.operationProgress(): List<OperationProgress> {

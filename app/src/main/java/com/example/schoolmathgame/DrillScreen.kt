@@ -158,7 +158,10 @@ private fun DrillScreenContent(viewModel: DrillViewModel) {
                     onOperationEnabledChanged = viewModel::setOperationEnabled,
                     onInAppYoutubeEnabledChanged = viewModel::setInAppYoutubeEnabled,
                     onYoutubeMinutesPer100CorrectChanged = viewModel::setYoutubeMinutesPer100Correct,
+                    onYoutubeRewardAvailableSecondsChanged = viewModel::setYoutubeRewardAvailableSeconds,
                     onSaveYoutubeWifiSettings = viewModel::saveYoutubeWifiSettings,
+                    onSelectYoutubeWifiSettings = viewModel::selectYoutubeWifiSettings,
+                    onDeleteYoutubeWifiSettings = viewModel::deleteYoutubeWifiSettings,
                     onSavePassword = viewModel::saveParentPassword,
                 )
 
@@ -649,7 +652,10 @@ private fun AdminScreen(
     onOperationEnabledChanged: (Operation) -> Unit,
     onInAppYoutubeEnabledChanged: (Boolean) -> Unit,
     onYoutubeMinutesPer100CorrectChanged: (Int) -> Unit,
+    onYoutubeRewardAvailableSecondsChanged: (Int) -> Unit,
     onSaveYoutubeWifiSettings: (String, String) -> Unit,
+    onSelectYoutubeWifiSettings: (String) -> Unit,
+    onDeleteYoutubeWifiSettings: (String) -> Unit,
     onSavePassword: (String, String) -> Boolean,
 ) {
     val context = LocalContext.current
@@ -687,10 +693,21 @@ private fun AdminScreen(
         wifiScanMessage = if (wifiSsids.isEmpty()) emptyMessage else null
     }
 
+    fun applyWifiNetwork(network: SavedWifiNetwork) {
+        youtubeWifiSsid = network.ssid
+        youtubeWifiPassword = network.password
+        isWifiConnectionConfirmed = false
+        wifiScanMessage = null
+        wifiConnectionMessage = null
+    }
+
     fun fillCurrentWifiSsid() {
         if (uiState.youtubeWifiSsid.isNotBlank() || youtubeWifiSsid.isNotBlank()) return
         context.currentConnectedWifiSsid()?.let { ssid ->
             youtubeWifiSsid = ssid
+            uiState.savedYoutubeWifiNetworks.firstOrNull { network -> network.ssid == ssid }?.let { network ->
+                youtubeWifiPassword = network.password
+            }
             isWifiConnectionConfirmed = false
             wifiScanMessage = null
         }
@@ -1026,6 +1043,11 @@ private fun AdminScreen(
                         onMinutesChanged = onYoutubeMinutesPer100CorrectChanged,
                     )
 
+                    YoutubeAvailableTimeSlider(
+                        availableSeconds = uiState.youtubeRewardAvailableSeconds,
+                        onAvailableSecondsChanged = onYoutubeRewardAvailableSecondsChanged,
+                    )
+
                     Text(
                         text = "総得点 ${uiState.youtubeRewardTotalScore}点 / YouTube残り ${uiState.youtubeRewardTimeText()}",
                         color = MaterialTheme.colorScheme.primary,
@@ -1039,6 +1061,81 @@ private fun AdminScreen(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Black,
                     )
+                    if (uiState.savedYoutubeWifiNetworks.isNotEmpty()) {
+                        Text(
+                            text = "保存済みWiFi",
+                            color = Color(0xFF666666),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            uiState.savedYoutubeWifiNetworks.forEach { network ->
+                                val isSelected = network.ssid == uiState.youtubeWifiSsid
+                                Surface(
+                                    modifier = Modifier.width(220.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) Color(0xFFE5EEFF) else Color.White,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                applyWifiNetwork(network)
+                                                onSelectYoutubeWifiSettings(network.ssid)
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(44.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp),
+                                            colors = if (isSelected) {
+                                                ButtonDefaults.buttonColors(containerColor = Color(0xFF16408F))
+                                            } else {
+                                                ButtonDefaults.buttonColors()
+                                            },
+                                        ) {
+                                            Text(
+                                                text = network.ssid,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                if (youtubeWifiSsid == network.ssid) {
+                                                    youtubeWifiSsid = ""
+                                                    youtubeWifiPassword = ""
+                                                    wifiConnectionMessage = null
+                                                    isWifiConnectionConfirmed = false
+                                                }
+                                                onDeleteYoutubeWifiSettings(network.ssid)
+                                            },
+                                            modifier = Modifier.height(44.dp),
+                                            contentPadding = PaddingValues(horizontal = 6.dp),
+                                        ) {
+                                            Text(
+                                                text = "削除",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1285,8 +1382,14 @@ private fun AdminScreen(
                         item(key = ssid) {
                             Button(
                                 onClick = {
-                                    youtubeWifiSsid = ssid
-                                    isWifiConnectionConfirmed = false
+                                    val savedNetwork = uiState.savedYoutubeWifiNetworks
+                                        .firstOrNull { network -> network.ssid == ssid }
+                                    if (savedNetwork == null) {
+                                        youtubeWifiSsid = ssid
+                                        isWifiConnectionConfirmed = false
+                                    } else {
+                                        applyWifiNetwork(savedNetwork)
+                                    }
                                     showWifiSsidList = false
                                     wifiScanMessage = null
                                 },
@@ -1431,6 +1534,45 @@ private fun InAppYoutubeSetting(
 }
 
 @Composable
+private fun YoutubeAvailableTimeSlider(
+    availableSeconds: Int,
+    onAvailableSecondsChanged: (Int) -> Unit,
+) {
+    val minutes = (availableSeconds / 60).coerceIn(0, 120)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "既に視聴できる時間",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+            Text(
+                text = (minutes * 60).formatRewardTimeText(),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF16408F),
+            )
+        }
+        Slider(
+            value = minutes.toFloat(),
+            onValueChange = { value ->
+                onAvailableSecondsChanged(value.toInt().coerceIn(0, 120) * 60)
+            },
+            valueRange = 0f..120f,
+            steps = 119,
+        )
+    }
+}
+
+@Composable
 private fun PasswordVisibilityButton(
     visible: Boolean,
     onClick: () -> Unit,
@@ -1474,11 +1616,10 @@ private fun YoutubeRewardSlider(
         Slider(
             value = minutes.toFloat(),
             onValueChange = {
-                val rounded = ((it + 2.5f).toInt() / 5) * 5
-                onMinutesChanged(rounded.coerceIn(0, 120))
+                onMinutesChanged(it.toInt().coerceIn(0, 120))
             },
             valueRange = 0f..120f,
-            steps = 23,
+            steps = 119,
         )
     }
 }
@@ -2099,29 +2240,34 @@ private fun rememberYoutubeWifiStatus(
     isScreenActive: Boolean,
 ): String {
     val context = LocalContext.current
-    var status by remember(uiState.youtubeWifiSsid) {
+    val wifiCandidates = remember(
+        uiState.youtubeWifiSsid,
+        uiState.youtubeWifiPassword,
+        uiState.savedYoutubeWifiNetworks,
+    ) {
+        uiState.youtubeWifiCandidates()
+    }
+    var status by remember(wifiCandidates) {
         mutableStateOf(
-            if (uiState.youtubeWifiSsid.isBlank()) {
+            if (wifiCandidates.isEmpty()) {
                 "YouTube WiFiが未設定です。現在のネットワークで開きます。"
             } else {
-                "WiFi接続中: ${uiState.youtubeWifiSsid}"
+                "WiFi接続中: ${wifiCandidates.first().ssid}"
             },
         )
     }
 
     DisposableEffect(
-        uiState.youtubeWifiSsid,
-        uiState.youtubeWifiPassword,
+        wifiCandidates,
         hasWifiPermission,
         isScreenActive,
     ) {
-        val ssid = uiState.youtubeWifiSsid
         if (!isScreenActive) {
             Log.d(WifiLogTag, "YouTube wifi paused: screen inactive")
             status = "アプリを表示するとWiFi接続を開始します。"
             onDispose { }
-        } else if (ssid.isBlank()) {
-            Log.d(WifiLogTag, "YouTube wifi skipped: blank ssid")
+        } else if (wifiCandidates.isEmpty()) {
+            Log.d(WifiLogTag, "YouTube wifi skipped: no saved ssid")
             onDispose { }
         } else if (!hasWifiPermission) {
             Log.d(WifiLogTag, "YouTube wifi blocked: missing fine location permission")
@@ -2138,96 +2284,146 @@ private fun rememberYoutubeWifiStatus(
             val currentWifi = context.currentWifiConnection()
             Log.d(
                 WifiLogTag,
-                "YouTube wifi start ssid=$ssid current=${currentWifi?.ssid} hasInternet=${currentWifi?.hasInternet} validated=${currentWifi?.isValidated}",
+                "YouTube wifi start candidates=${wifiCandidates.map { it.ssid }} current=${currentWifi?.ssid} hasInternet=${currentWifi?.hasInternet} validated=${currentWifi?.isValidated}",
             )
-            if (currentWifi?.ssid == ssid) {
-                if (currentWifi.isValidated) {
-                    connectivityManager.bindProcessToNetwork(currentWifi.network)
-                    status = "WiFi接続完了: $ssid"
-                    Log.d(WifiLogTag, "YouTube wifi success: already connected and validated")
-                } else {
-                    status = "WiFiに接続済みですが、インターネットに接続できません。"
-                    Log.d(WifiLogTag, "YouTube wifi failed: already connected but not validated")
-                }
+            val connectedCandidate = wifiCandidates.firstOrNull { candidate ->
+                currentWifi?.ssid == candidate.ssid
+            }
+            if (connectedCandidate != null && currentWifi?.isValidated == true) {
+                connectivityManager.bindProcessToNetwork(currentWifi.network)
+                status = "WiFi接続完了: ${connectedCandidate.ssid}"
+                Log.d(WifiLogTag, "YouTube wifi success: already connected and validated")
                 onDispose {
                     connectivityManager.bindProcessToNetwork(null)
                 }
             } else {
-            val mainHandler = Handler(Looper.getMainLooper())
-            var registered = false
-            var bound = false
-            val callback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    Log.d(WifiLogTag, "YouTube request onAvailable network=$network")
-                    mainHandler.post {
-                        status = "WiFi接続中: $ssid"
+                val mainHandler = Handler(Looper.getMainLooper())
+                var registeredCallback: ConnectivityManager.NetworkCallback? = null
+                var bound = false
+                var finished = false
+
+                fun unregisterActiveCallback() {
+                    registeredCallback?.let { callback ->
+                        runCatching { connectivityManager.unregisterNetworkCallback(callback) }
                     }
+                    registeredCallback = null
                 }
 
-                override fun onCapabilitiesChanged(
-                    network: Network,
-                    networkCapabilities: NetworkCapabilities,
-                ) {
-                    val hasInternet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    val validated = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    Log.d(
-                        WifiLogTag,
-                        "YouTube request onCapabilitiesChanged network=$network hasInternet=$hasInternet validated=$validated",
-                    )
-                    mainHandler.post {
-                    if (validated) {
-                        if (!bound) {
-                            connectivityManager.bindProcessToNetwork(network)
-                            bound = true
+                fun startConnectionAttempt(index: Int) {
+                    if (finished || index >= wifiCandidates.size) {
+                        if (!finished) {
+                            status = "保存済みWiFiに接続できませんでした。"
                         }
-                        status = "WiFi接続完了: $ssid"
-                    } else if (hasInternet) {
-                        status = "WiFi接続中: $ssid / インターネット確認中"
-                        } else {
-                            status = "WiFiに接続しましたが、インターネットに接続できません。"
+                        return
+                    }
+                    unregisterActiveCallback()
+                    val candidate = wifiCandidates[index]
+                    val ssid = candidate.ssid
+                    val attemptText = if (wifiCandidates.size == 1) {
+                        ""
+                    } else {
+                        " (${index + 1}/${wifiCandidates.size})"
+                    }
+                    status = "WiFi接続中: $ssid$attemptText"
+                    val callback = object : ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: Network) {
+                            Log.d(WifiLogTag, "YouTube request onAvailable ssid=$ssid network=$network")
+                            mainHandler.post {
+                                status = "WiFi接続中: $ssid / インターネット確認中"
+                            }
+                        }
+
+                        override fun onCapabilitiesChanged(
+                            network: Network,
+                            networkCapabilities: NetworkCapabilities,
+                        ) {
+                            val hasInternet = networkCapabilities.hasCapability(
+                                NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                            )
+                            val validated = networkCapabilities.hasCapability(
+                                NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                            )
+                            Log.d(
+                                WifiLogTag,
+                                "YouTube request onCapabilitiesChanged ssid=$ssid network=$network hasInternet=$hasInternet validated=$validated",
+                            )
+                            mainHandler.post {
+                                if (finished) return@post
+                                if (validated) {
+                                    if (!bound) {
+                                        connectivityManager.bindProcessToNetwork(network)
+                                        bound = true
+                                    }
+                                    finished = true
+                                    status = "WiFi接続完了: $ssid"
+                                } else if (hasInternet) {
+                                    status = "WiFi接続中: $ssid / インターネット確認中"
+                                } else {
+                                    status = "WiFi接続中: $ssid / インターネット確認中"
+                                }
+                            }
+                        }
+
+                        override fun onUnavailable() {
+                            Log.d(WifiLogTag, "YouTube request onUnavailable ssid=$ssid")
+                            mainHandler.post {
+                                if (!finished) {
+                                    startConnectionAttempt(index + 1)
+                                }
+                            }
+                        }
+
+                        override fun onLost(network: Network) {
+                            Log.d(WifiLogTag, "YouTube request onLost ssid=$ssid network=$network")
+                            mainHandler.post {
+                                if (finished) {
+                                    status = "WiFi接続が切れました。"
+                                } else {
+                                    startConnectionAttempt(index + 1)
+                                }
+                            }
                         }
                     }
-                }
 
-                override fun onUnavailable() {
-                    Log.d(WifiLogTag, "YouTube request onUnavailable ssid=$ssid")
-                    mainHandler.post {
-                        status = "WiFiに接続できませんでした。"
+                    runCatching {
+                        val request = context.wifiNetworkRequest(
+                            ssid = ssid,
+                            password = candidate.password,
+                        )
+                        Log.d(
+                            WifiLogTag,
+                            "YouTube requestNetwork start ssid=$ssid passwordLength=${candidate.password.length}",
+                        )
+                        connectivityManager.requestNetwork(request, callback)
+                        registeredCallback = callback
+                    }.onFailure { throwable ->
+                        Log.e(WifiLogTag, "YouTube requestNetwork failed to start ssid=$ssid", throwable)
+                        status = throwable.message ?: "WiFi接続リクエストを開始できませんでした。"
+                        startConnectionAttempt(index + 1)
                     }
                 }
 
-                override fun onLost(network: Network) {
-                    Log.d(WifiLogTag, "YouTube request onLost network=$network")
-                    mainHandler.post {
-                        status = "WiFi接続が切れました。"
-                    }
-                }
-            }
+                startConnectionAttempt(0)
 
-            runCatching {
-                val request = context.wifiNetworkRequest(
-                    ssid = ssid,
-                    password = uiState.youtubeWifiPassword,
-                )
-                Log.d(WifiLogTag, "YouTube requestNetwork start ssid=$ssid passwordLength=${uiState.youtubeWifiPassword.length}")
-                connectivityManager.requestNetwork(request, callback)
-                registered = true
-            }.onFailure { throwable ->
-                Log.e(WifiLogTag, "YouTube requestNetwork failed to start ssid=$ssid", throwable)
-                status = throwable.message ?: "WiFi接続リクエストを開始できませんでした。"
-            }
-
-            onDispose {
-                connectivityManager.bindProcessToNetwork(null)
-                if (registered) {
-                    runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+                onDispose {
+                    finished = true
+                    connectivityManager.bindProcessToNetwork(null)
+                    unregisterActiveCallback()
                 }
-            }
             }
         }
     }
 
     return status
+}
+
+private fun DrillUiState.youtubeWifiCandidates(): List<SavedWifiNetwork> {
+    return (
+        listOf(SavedWifiNetwork(youtubeWifiSsid, youtubeWifiPassword)) + savedYoutubeWifiNetworks
+        )
+        .map { network -> network.copy(ssid = network.ssid.trim()) }
+        .filter { network -> network.ssid.isNotBlank() }
+        .distinctBy { network -> network.ssid }
 }
 
 private fun Context.hasFineLocationPermission(): Boolean =
